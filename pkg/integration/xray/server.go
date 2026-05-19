@@ -73,12 +73,18 @@ func NewClient(cfg MCTEClientConfig, log *zap.Logger) (*Client, error) {
 	return &Client{cfg: cfg, sdk: sdk, log: log}, nil
 }
 
+// Dial 拨号到远端 MCTE inbound，返回 net.Conn。
+func (c *Client) Dial(ctx context.Context, host string, port uint16) (net.Conn, error) {
+	return c.sdk.Dial(ctx, host, port)
+}
+
 // Process 接收 Xray 的 link（Reader+Writer）+ 目标 host/port，
 // 用 MCTE client SDK 拨号到远端 inbound 并双向透传。
 //
 // 调用方应在 Xray Outbound.Process 中调用本函数：
-//   ob := session.OutboundFromContext(ctx)
-//   return client.Process(ctx, link, ob.Target.Address.Domain(), uint16(ob.Target.Port))
+//
+//	ob := session.OutboundFromContext(ctx)
+//	return client.Process(ctx, link, ob.Target.Address.Domain(), uint16(ob.Target.Port))
 func (c *Client) Process(ctx context.Context, reader io.Reader, writer io.Writer, host string, port uint16) error {
 	conn, err := c.sdk.Dial(ctx, host, port)
 	if err != nil {

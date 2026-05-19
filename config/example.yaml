@@ -2,6 +2,9 @@
 listen:
   tcp: "0.0.0.0:25565"   # Java；留空跳过
   udp: "0.0.0.0:19132"   # Bedrock；留空跳过
+  # Bedrock 离线 ping 响应的 motd（留空使用通用默认值，不含品牌特征）
+  # 字段：MCPE;<motd>;<protocol>;<gameVersion>;<online>;<max>;<serverGUID>;<sub-motd>;<gamemode>;<gamemodeNum>;<portV4>;<portV6>;
+  # motd: "MCPE;My Server;800;1.21.4;0;100;0;Bedrock level;Survival;1;19132;19133;"
 
 tunnel:
   channel: "mcte:data"
@@ -59,3 +62,10 @@ log:
 metrics:
   enabled: false
   listen: "127.0.0.1:9090"
+
+# 按源 IP 限速 accept（推荐开启，防止单 IP 暴力连接）。
+ratelimit:
+  enabled: true
+  rps: 10              # 每秒每 IP 允许的新连接数
+  burst: 20            # 突发桶大小
+  max_entries: 16384   # limiter LRU 上限，防止 IP 扫描爆内存

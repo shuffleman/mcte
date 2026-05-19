@@ -51,7 +51,10 @@ func NewUDPListener(addr string, queue int, opt Options) (*UDPListener, error) {
 	}
 	motd := opt.MOTD
 	if motd == "" {
-		motd = "MCPE;MCTE;800;1.21.4;0;100;0;;Survival;1;19132;19133;"
+		// 默认 MOTD 必须无品牌特征，避免离线 ping 直接暴露代理身份。
+		// Bedrock 服务端常见默认是 "Dedicated Server" / "A Minecraft Server" 等。
+		// 字段：MCPE;<motd>;<protocol>;<gameVersion>;<online>;<max>;<serverGUID>;<sub-motd>;<gamemode>;<gamemodeNum>;<portV4>;<portV6>;
+		motd = "MCPE;Dedicated Server;800;1.21.4;0;100;0;Bedrock level;Survival;1;19132;19133;"
 	}
 	maxSessions := opt.MaxSessions
 	if maxSessions <= 0 {

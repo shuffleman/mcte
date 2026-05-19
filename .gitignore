@@ -20,3 +20,6 @@ Thumbs.db
 # Local plan / spec workspace
 .claude/
 .spec-workflow/
+
+# Runtime logs
+/logs/

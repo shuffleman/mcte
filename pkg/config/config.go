@@ -14,11 +14,15 @@ type Config struct {
 	Scheduler   SchedulerConfig   `yaml:"scheduler"`
 	Log         LogConfig         `yaml:"log"`
 	Metrics     MetricsConfig     `yaml:"metrics"`
+	Ratelimit   RatelimitConfig   `yaml:"ratelimit"`
 }
 
 type ListenConfig struct {
 	TCP string `yaml:"tcp"`
 	UDP string `yaml:"udp"`
+	// MOTD Bedrock 离线 ping 响应的 motd 串（完整字段格式见 raknet.BuildUnconnectedPong）。
+	// 留空则使用通用默认值（不含任何品牌特征）。
+	MOTD string `yaml:"motd"`
 }
 
 // TunnelConfig 隧道行为参数（与具体认证解耦）。
@@ -101,6 +105,15 @@ type LogConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Listen  string `yaml:"listen"`
+}
+
+// RatelimitConfig 按源 IP 限制连接速率（每秒接受多少个新连接）。
+// 启用时在 accept 路径上强制执行：超出速率的新连接立即关闭。
+type RatelimitConfig struct {
+	Enabled    bool    `yaml:"enabled"`
+	RPS        float64 `yaml:"rps"`         // 每秒允许的连接数；默认 10
+	Burst      int     `yaml:"burst"`       // 突发桶大小；默认 20
+	MaxEntries int     `yaml:"max_entries"` // limiters 上限；默认 16384
 }
 
 // Defaults 给出零值的合理默认。

@@ -16,6 +16,7 @@ import (
 	"github.com/shuffleman/mcte/pkg/passthrough"
 	"github.com/shuffleman/mcte/pkg/plugin"
 	"github.com/shuffleman/mcte/pkg/plugin/builtin/metrics"
+	"github.com/shuffleman/mcte/pkg/plugin/builtin/ratelimit"
 	"github.com/shuffleman/mcte/pkg/protocol/bedrock/raknet"
 	"github.com/shuffleman/mcte/pkg/session"
 	"github.com/shuffleman/mcte/pkg/tunnel"
@@ -48,6 +49,7 @@ type Engine struct {
 	mgr      *session.Manager
 	registry *plugin.Registry
 	metrics  *metrics.Plugin
+	rl       *ratelimit.Plugin
 
 	validator   *auth.Validator
 	uuidField   string
@@ -72,6 +74,7 @@ func New(cfg *config.Config, log *zap.Logger, upstream UpstreamDialer) (*Engine,
 	hy, err := listener.NewWithOptions(cfg.Listen.TCP, cfg.Listen.UDP, listener.Options{
 		MaxSessions: cfg.Session.MaxConcurrent,
 		IdleTimeout: cfg.Session.IdleTimeout,
+		MOTD:        cfg.Listen.MOTD,
 	})
 	if err != nil {
 		return nil, err
@@ -142,6 +145,24 @@ func New(cfg *config.Config, log *zap.Logger, upstream UpstreamDialer) (*Engine,
 		reg.Register(metricsP)
 	}
 
+	var rl *ratelimit.Plugin
+	if cfg.Ratelimit.Enabled {
+		rps := cfg.Ratelimit.RPS
+		if rps <= 0 {
+			rps = 10
+		}
+		burst := cfg.Ratelimit.Burst
+		if burst <= 0 {
+			burst = 20
+		}
+		maxEntries := cfg.Ratelimit.MaxEntries
+		if maxEntries <= 0 {
+			maxEntries = 16384
+		}
+		rl = ratelimit.NewWithOptions(rps, burst, maxEntries, 30*time.Second)
+		reg.Register(rl)
+	}
+
 	maxConn := cfg.Session.MaxConcurrent
 	if maxConn <= 0 {
 		maxConn = 10000
@@ -157,6 +178,7 @@ func New(cfg *config.Config, log *zap.Logger, upstream UpstreamDialer) (*Engine,
 		mgr:         mgr,
 		registry:    reg,
 		metrics:     metricsP,
+		rl:          rl,
 		validator:   validator,
 		uuidField:   cfg.Tunnel.UUIDField,
 		targetField: cfg.Tunnel.TargetField,
@@ -187,6 +209,11 @@ func (e *Engine) Run(ctx context.Context) error {
 				tcpCh = nil
 				continue
 			}
+			if !e.allowAccept(c.RemoteAddr()) {
+				e.log.Debug("tcp accept dropped: rate limited")
+				_ = c.Close()
+				continue
+			}
 			select {
 			case e.sem <- struct{}{}:
 				go func() {
@@ -202,6 +229,11 @@ func (e *Engine) Run(ctx context.Context) error {
 				udpCh = nil
 				continue
 			}
+			if !e.allowAccept(s.Remote()) {
+				e.log.Debug("udp accept dropped: rate limited")
+				_ = s.Close()
+				continue
+			}
 			select {
 			case e.sem <- struct{}{}:
 				go func() {
@@ -214,6 +246,19 @@ func (e *Engine) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// allowAccept 在 accept 路径调用：未启用 ratelimit 直接放行；
+// 启用时按 source IP 限速。提取 host 部分（去端口）作为限速 key。
+func (e *Engine) allowAccept(addr net.Addr) bool {
+	if e.rl == nil || addr == nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	return e.rl.Allow(host)
 }
 
 func (e *Engine) handleTCP(ctx context.Context, c net.Conn) {

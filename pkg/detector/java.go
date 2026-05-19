@@ -58,7 +58,10 @@ func DetectJava(raw net.Conn, opt DetectJavaOption) (*DetectResult, error) {
 		_ = raw.Close()
 		return nil, err
 	}
-	if pktLen <= 0 || pktLen > 1024*8 {
+	// detector 上限必须与 framer MaxPacketSize 对齐：
+	// 早期版本卡在 8KB 与 framer 的 2MB 不一致，攻击者可发 9KB-2MB 的包做指纹识别
+	// （MCTE 立即关 vs 真实 MC server 接受）。现在两者一致，行为不可区分。
+	if pktLen <= 0 || int(pktLen) > java.MaxPacketSize {
 		_ = raw.Close()
 		return nil, java.ErrPacketTooLarge
 	}

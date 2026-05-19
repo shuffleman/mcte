@@ -90,12 +90,22 @@ func DetectBedrock(ctx context.Context, s *raknet.Session, opt BedrockDetectOpti
 			res.Kind = KindMC
 			return res, nil
 		}
+		target, port := bedrock.TargetFromClientData(lp, tf)
+		if target == "" || port == 0 {
+			// 抗探测：UUID 合法但 target 缺失/格式错时，必须降级为 KindMC，
+			// 让 fallback 透传处理。不能返回 error —— 否则 RakNet session 异常关闭
+			// 与正常 MC server 行为不同，攻击者可借此确认 UUID 已被服务端识别。
+			res.Kind = KindMC
+			res.User = nil
+			return res, nil
+		}
 		res.Kind = KindTunnel
 		res.User = user
-		res.Target, res.Port = bedrock.TargetFromClientData(lp, tf)
-		if res.Target == "" || res.Port == 0 {
-			return nil, errors.New("bedrock: tunnel target missing in client data")
-		}
+		res.Target = target
+		res.Port = port
 		return res, nil
 	}
 }
+
+// ensure errors stays imported in case future branches need it.
+var _ = errors.New
