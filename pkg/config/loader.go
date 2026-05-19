@@ -32,8 +32,12 @@ func validate(c *Config) error {
 			return errors.New("config: users[" + itoaSimple(i) + "].uuid is required")
 		}
 	}
-	if len(c.FallbackTargets()) == 0 {
-		return errors.New("config: fallback.targets (or legacy passthrough.targets) must not be empty")
+	// 每个启用的监听协议必须有对应的 fallback 目标
+	if c.Listen.TCP != "" && len(c.FallbackTCP()) == 0 {
+		return errors.New("config: listen.tcp set but no fallback.tcp / fallback.targets configured")
+	}
+	if c.Listen.UDP != "" && len(c.FallbackUDP()) == 0 {
+		return errors.New("config: listen.udp set but no fallback.udp / fallback.targets configured")
 	}
 	if c.Listen.TCP == "" && c.Listen.UDP == "" {
 		return errors.New("config: at least one of listen.tcp / listen.udp must be set")

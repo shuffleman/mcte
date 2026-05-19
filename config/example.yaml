@@ -1,7 +1,7 @@
 # MCTE 示例配置（inbound 形态，UUID 鉴权）
 listen:
-  tcp: "0.0.0.0:25565"   # Java
-  udp: "0.0.0.0:19132"   # Bedrock
+  tcp: "0.0.0.0:25565"   # Java；留空跳过
+  udp: "0.0.0.0:19132"   # Bedrock；留空跳过
 
 tunnel:
   channel: "mcte:data"
@@ -11,6 +11,16 @@ tunnel:
   keepalive_every: 20s
   keepalive_timeout: 30s
 
+  # 流量画像（推荐开启）：按数据大小映射到不同 channel，
+  # 模拟玩家"移动 / 飞行 / 区块加载 / 空闲心跳"
+  mimic:
+    enabled: true
+    # 全部默认即可与客户端 client.DefaultProfile() 配套
+    # prefix: "mcte:"
+    # move_max: 32
+    # fly_max: 256
+    # chunk_split: 2048
+
 users:
   - name: alice
     uuid: "550e8400-e29b-41d4-a716-446655440000"
@@ -18,10 +28,21 @@ users:
   - name: bob
     uuid: "13b25c91-f5e6-4f3b-b9b4-1a2f30b76e2c"
 
+# 未认证 / 未知 UUID 的连接会透传到这里（伪装成正常 MC 服务）。
+# 建议按协议分别配置：tcp 给 Java，udp 给 Bedrock。
+# 旧写法 fallback.targets 仍然支持，当对应 tcp/udp 字段未填时作为兜底。
 fallback:
-  targets:
-    - "127.0.0.1:25566"   # 真实 MC server，未认证连接透传到这里
+  tcp:
+    - "127.0.0.1:25566"     # 真实 Java MC server（Vanilla / Paper / Spigot...）
+  udp:
+    - "127.0.0.1:19133"     # 真实 Bedrock MC server（BDS / PocketMine / NukkitX...）
   dial_timeout: 5s
+
+# 兼容写法：以下二者等价于 fallback.tcp + fallback.udp 都填同一个列表。
+# fallback:
+#   targets:
+#     - "127.0.0.1:25566"
+#   dial_timeout: 5s
 
 session:
   max_concurrent: 10000
@@ -32,8 +53,8 @@ scheduler:
   send_budget_per_tick: 65536
 
 log:
-  level: info
-  format: console
+  level: info        # debug/info/warn/error
+  format: console    # console/json
 
 metrics:
   enabled: false

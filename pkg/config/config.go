@@ -56,13 +56,28 @@ type UserConfig struct {
 }
 
 // FallbackConfig 未认证连接的去向（推荐配置真实 MC server 抗探测）。
+//
+// 优先级（按协议分别选取）：
+//   Java (TCP):    fallback.tcp → fallback.targets → passthrough.targets
+//   Bedrock (UDP): fallback.udp → fallback.targets → passthrough.targets
+//
+// 推荐写法：
+//   fallback:
+//     tcp: ["127.0.0.1:25566"]    # 真实 Java MC server
+//     udp: ["127.0.0.1:19133"]    # 真实 Bedrock MC server
+//
+// 旧写法仍支持（targets 同时给两边）：
+//   fallback:
+//     targets: ["127.0.0.1:25566"]
 type FallbackConfig struct {
+	// Targets 通用列表；当 TCP / UDP 任一未填时作为该协议的 fallback。
 	Targets     []string      `yaml:"targets"`
+	TCP         []string      `yaml:"tcp"` // Java 透传后端（TCP）
+	UDP         []string      `yaml:"udp"` // Bedrock 透传后端（UDP/RakNet）
 	DialTimeout time.Duration `yaml:"dial_timeout"`
 }
 
-// PassthroughConfig 兼容字段：Targets 与 Fallback.Targets 二选一；
-// 同时填以 fallback 为准。
+// PassthroughConfig 兼容字段：与 Fallback.Targets 等价（fallback 优先）。
 type PassthroughConfig struct {
 	Targets     []string      `yaml:"targets"`
 	DialTimeout time.Duration `yaml:"dial_timeout"`
@@ -109,12 +124,31 @@ func Defaults() Config {
 	}
 }
 
-// FallbackTargets 合并 Fallback.Targets 与 Passthrough.Targets，前者优先。
+// FallbackTargets 返回通用 fallback 列表（兼容旧调用方）。
+// 优先 Fallback.Targets，否则 Passthrough.Targets。
 func (c *Config) FallbackTargets() []string {
 	if len(c.Fallback.Targets) > 0 {
 		return c.Fallback.Targets
 	}
 	return c.Passthrough.Targets
+}
+
+// FallbackTCP 返回 Java 透传后端列表。
+// 优先级：fallback.tcp → fallback.targets → passthrough.targets。
+func (c *Config) FallbackTCP() []string {
+	if len(c.Fallback.TCP) > 0 {
+		return c.Fallback.TCP
+	}
+	return c.FallbackTargets()
+}
+
+// FallbackUDP 返回 Bedrock 透传后端列表。
+// 优先级：fallback.udp → fallback.targets → passthrough.targets。
+func (c *Config) FallbackUDP() []string {
+	if len(c.Fallback.UDP) > 0 {
+		return c.Fallback.UDP
+	}
+	return c.FallbackTargets()
 }
 
 // FallbackDialTimeout 取 fallback 或 passthrough。

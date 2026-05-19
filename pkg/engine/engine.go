@@ -76,13 +76,22 @@ func New(cfg *config.Config, log *zap.Logger, upstream UpstreamDialer) (*Engine,
 	if err != nil {
 		return nil, err
 	}
-	fallbackTargets := cfg.FallbackTargets()
 	fallbackTimeout := cfg.FallbackDialTimeout()
-	d, err := passthrough.NewDialer(fallbackTargets, fallbackTimeout)
-	if err != nil {
-		return nil, err
+	// Java（TCP）和 Bedrock（UDP）分别使用各自的 fallback 列表
+	tcpTargets := cfg.FallbackTCP()
+	udpTargets := cfg.FallbackUDP()
+
+	var (
+		passH *passthrough.Handler
+		d     *passthrough.Dialer
+	)
+	if len(tcpTargets) > 0 {
+		d, err = passthrough.NewDialer(tcpTargets, fallbackTimeout)
+		if err != nil {
+			return nil, err
+		}
+		passH = passthrough.NewHandler(d)
 	}
-	passH := passthrough.NewHandler(d)
 	var tunMimic *tunnel.MimicMatcher
 	if cfg.Tunnel.Mimic.Enabled {
 		tunMimic = buildMimicMatcher(cfg.Tunnel.Mimic)
@@ -103,11 +112,14 @@ func New(cfg *config.Config, log *zap.Logger, upstream UpstreamDialer) (*Engine,
 	}, func(ctx context.Context, host string, port uint16) (net.Conn, error) {
 		return upstream.DialUpstream(ctx, host, port)
 	})
-	bdDialer, derr := passthrough.NewBedrockDialer(fallbackTargets, fallbackTimeout)
-	if derr != nil {
-		return nil, derr
+	var passBE *passthrough.BedrockHandler
+	if len(udpTargets) > 0 {
+		bdDialer, derr := passthrough.NewBedrockDialer(udpTargets, fallbackTimeout)
+		if derr != nil {
+			return nil, derr
+		}
+		passBE = passthrough.NewBedrockHandler(bdDialer)
 	}
-	passBE := passthrough.NewBedrockHandler(bdDialer)
 
 	// 构造 user validator
 	validator := auth.NewValidator()
@@ -239,6 +251,11 @@ func (e *Engine) handleTCP(ctx context.Context, c net.Conn) {
 			e.log.Debug("java tunnel ended", zap.Error(err))
 		}
 	default:
+		if e.pass == nil {
+			e.log.Debug("java passthrough requested but no fallback.tcp configured; closing")
+			_ = res.Conn.Close()
+			return
+		}
 		if err := e.pass.Handle(ctx, res.Conn); err != nil {
 			e.log.Debug("java passthrough ended", zap.Error(err))
 		}
@@ -293,6 +310,11 @@ func (e *Engine) handleUDP(ctx context.Context, sess *raknet.Session) {
 			e.log.Debug("bedrock tunnel ended", zap.Error(err))
 		}
 	default:
+		if e.passBE == nil {
+			e.log.Debug("bedrock passthrough requested but no fallback.udp configured; closing")
+			_ = sess.Close()
+			return
+		}
 		if err := e.passBE.Handle(ctx, sess, res); err != nil {
 			e.log.Debug("bedrock passthrough ended", zap.Error(err))
 		}
