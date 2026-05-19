@@ -1,0 +1,60 @@
+{
+  "_comment": "MoreRay-core 服务端：MCTE inbound 落地节点",
+  "log": {
+    "loglevel": "info"
+  },
+  "inbounds": [
+    {
+      "tag": "in-mcte",
+      "protocol": "mcte",
+      "settings": {
+        "listenTcp": "0.0.0.0:25565",
+        "listenUdp": "0.0.0.0:19132",
+        "javaEnabled": true,
+        "bedrockEnabled": true,
+        "maxSessions": 10000,
+        "motd": "MCPE;Dedicated Server;800;1.21.4;0;100;0;Bedrock level;Survival;1;19132;19133;",
+        "channel": "mcte:data",
+        "uuidField": "MCTEUuid",
+        "targetField": "MCTETarget",
+        "users": [
+          {
+            "name": "alice",
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "level": 0
+          },
+          {
+            "name": "bob",
+            "uuid": "13b25c91-f5e6-4f3b-b9b4-1a2f30b76e2c"
+          }
+        ],
+        "fallbackTcp": [
+          "127.0.0.1:25566"
+        ],
+        "fallbackUdp": [
+          "127.0.0.1:19133"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["in-mcte"],
+        "outboundTag": "direct"
+      }
+    ]
+  }
+}

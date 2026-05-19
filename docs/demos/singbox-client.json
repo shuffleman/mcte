@@ -1,0 +1,46 @@
+{
+  "_comment": "sing-box 客户端配置：本地 mixed inbound + MCTE outbound 拨号远端节点",
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "in-local",
+      "listen": "127.0.0.1",
+      "listen_port": 1080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "minecraft",
+      "tag": "out-mcte",
+      "server": "mcte.example.com",
+      "server_port": 25565,
+      "uuid": "550e8400-e29b-41d4-a716-446655440000",
+      "network": "tcp",
+      "channel": "mcte:data",
+      "uuid_field": "MCTEUuid",
+      "target_field": "MCTETarget"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      }
+    ],
+    "final": "out-mcte",
+    "auto_detect_interface": true
+  }
+}

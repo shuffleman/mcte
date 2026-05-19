@@ -1,0 +1,55 @@
+{
+  "_comment": "MoreRay-core 客户端：本地 socks inbound + MCTE outbound 拨号远端节点",
+  "log": {
+    "loglevel": "info"
+  },
+  "inbounds": [
+    {
+      "tag": "in-local",
+      "port": 1080,
+      "listen": "127.0.0.1",
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "out-mcte",
+      "protocol": "mcte",
+      "settings": {
+        "server": "mcte.example.com",
+        "serverPort": 25565,
+        "uuid": "550e8400-e29b-41d4-a716-446655440000",
+        "network": "tcp",
+        "channel": "mcte:data",
+        "uuidField": "MCTEUuid",
+        "targetField": "MCTETarget"
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "ip": ["geoip:private"],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "outboundTag": "out-mcte",
+        "network": "tcp,udp"
+      }
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "_comment": "sing-box 服务端配置：MCTE inbound 落地节点",
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "minecraft",
+      "tag": "in-mcte",
+      "listen_tcp": "0.0.0.0:25565",
+      "listen_udp": "0.0.0.0:19132",
+      "java_enabled": true,
+      "bedrock_enabled": true,
+      "max_sessions": 10000,
+      "motd": "MCPE;Dedicated Server;800;1.21.4;0;100;0;Bedrock level;Survival;1;19132;19133;",
+      "uuid_field": "MCTEUuid",
+      "target_field": "MCTETarget",
+      "channel": "mcte:data",
+      "users": [
+        {
+          "name": "alice",
+          "uuid": "550e8400-e29b-41d4-a716-446655440000",
+          "level": 0
+        },
+        {
+          "name": "bob",
+          "uuid": "13b25c91-f5e6-4f3b-b9b4-1a2f30b76e2c"
+        }
+      ],
+      "fallback_tcp": [
+        "127.0.0.1:25566"
+      ],
+      "fallback_udp": [
+        "127.0.0.1:19133"
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "inbound": ["in-mcte"],
+        "outbound": "direct"
+      }
+    ],
+    "final": "direct",
+    "auto_detect_interface": true
+  }
+}
