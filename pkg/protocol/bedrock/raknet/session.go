@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/shuffleman/mcte/internal/debug"
 )
 
 // ConnState 会话状态。
@@ -130,7 +132,13 @@ func (s *Session) WriteApp(body []byte) error {
 
 // WriteAppCtx 携带 ctx 的版本；用于上游慢消费时优雅取消。
 func (s *Session) WriteAppCtx(ctx context.Context, body []byte) error {
+	if debug.Enabled() {
+		debug.Logf("WriteApp len=%d cwnd=%d inflight=%d", len(body), s.resend.Cwnd(), s.resend.Len())
+	}
 	if err := s.resend.WaitForRoom(ctx); err != nil {
+		if debug.Enabled() {
+			debug.Logf("WriteApp WaitForRoom err=%v cwnd=%d inflight=%d", err, s.resend.Cwnd(), s.resend.Len())
+		}
 		return err
 	}
 	return s.writeEncapsulated(body, RelReliableOrdered, 0)
@@ -208,6 +216,14 @@ func (s *Session) processDatagram(payload []byte) error {
 		if err != nil {
 			return err
 		}
+		if debug.Enabled() {
+			n := 0
+			for _, r := range records {
+				n += int(r.End - r.Start + 1)
+			}
+			debug.Logf("recv ACK from=%s seqs=%d records=%v cwnd=%d inflight=%d",
+				s.remote, n, records, s.resend.Cwnd(), s.resend.Len())
+		}
 		s.resend.AckRange(records)
 		return nil
 	}
@@ -229,6 +245,9 @@ func (s *Session) processDatagram(payload []byte) error {
 	}
 	seq := readUint24LE(payload[1:4])
 	isNew := s.recvWindow.Receive(seq)
+	if debug.Enabled() {
+		debug.Logf("recv reliable datagram seq=%d isNew=%v from=%s", seq, isNew, s.remote)
+	}
 	// 无论新旧 datagram 都必须 ACK！
 	// 关键不变量：对端 ACK 丢了会重传同一个 seq，如果接收端只对首次 ACK，
 	// 重传永远拿不到 ACK → 对端 cwnd 满后 WaitForRoom 永久阻塞 → user write 卡死。
@@ -420,6 +439,9 @@ func (s *Session) deliver(body []byte) {
 	// 是 UDP 正确的拥塞反馈机制。
 	cp := make([]byte, len(body))
 	copy(cp, body)
+	if debug.Enabled() {
+		debug.Logf("deliver app body len=%d head=%02x recvCh_len=%d", len(body), body[0], len(s.recvCh))
+	}
 	select {
 	case s.recvCh <- cp:
 	case <-s.stopped:
