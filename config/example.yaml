@@ -1,0 +1,40 @@
+# MCTE 示例配置（inbound 形态，UUID 鉴权）
+listen:
+  tcp: "0.0.0.0:25565"   # Java
+  udp: "0.0.0.0:19132"   # Bedrock
+
+tunnel:
+  channel: "mcte:data"
+  uuid_field: "MCTEUuid"      # Bedrock JWT claim 字段名
+  target_field: "MCTETarget"  # Bedrock JWT claim 字段名
+  write_timeout: 30s
+  keepalive_every: 20s
+  keepalive_timeout: 30s
+
+users:
+  - name: alice
+    uuid: "550e8400-e29b-41d4-a716-446655440000"
+    level: 0
+  - name: bob
+    uuid: "13b25c91-f5e6-4f3b-b9b4-1a2f30b76e2c"
+
+fallback:
+  targets:
+    - "127.0.0.1:25566"   # 真实 MC server，未认证连接透传到这里
+  dial_timeout: 5s
+
+session:
+  max_concurrent: 10000
+  idle_timeout: 5m
+
+scheduler:
+  tick_rate: 20
+  send_budget_per_tick: 65536
+
+log:
+  level: info
+  format: console
+
+metrics:
+  enabled: false
+  listen: "127.0.0.1:9090"

@@ -1,0 +1,22 @@
+# Binaries
+/mcte
+/mcte.exe
+*.exe
+*.test
+
+# Coverage
+*.out
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local plan / spec workspace
+.claude/
+.spec-workflow/
