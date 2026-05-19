@@ -23,3 +23,5 @@ Thumbs.db
 
 # Runtime logs
 /logs/
+/local-test/*.log
+/local-test/echo_https*
