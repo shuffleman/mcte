@@ -150,11 +150,23 @@ func (s *Session) Close() error {
 
 // Feed 由 UDP listener 投入一个属于本会话的原始 datagram。
 // 非阻塞：inbox 满时丢包并计入 dropInbox 计数，让出 listener 主循环。
-// 真正处理由 dispatcher goroutine 完成。
+//
+// 关键不变量：ACK/NAK/离线握手 datagram **必须走快速通道同步处理**，
+// 绝对不能被排在 inbox 后面等 dispatchLoop。
+// 因为 dispatchLoop 处理应用层 reliable 包时可能阻塞在 recvCh（用户慢消费），
+// 此时若 ACK 也排队等 dispatchLoop，就永远拿不到 ACK → 对端 cwnd 满 → 死锁。
+// 实测："直接阻塞死了" 就是这个 bug。
 func (s *Session) Feed(payload []byte) error {
 	if len(payload) == 0 {
 		return errors.New("raknet: empty datagram")
 	}
+	flag := payload[0]
+	// 离线握手 / ACK / NAK 走快速通道
+	if flag&FlagValid == 0 || flag&FlagACK != 0 || flag&FlagNAK != 0 {
+		s.lastRecv.Store(time.Now().UnixNano())
+		return s.processDatagram(payload)
+	}
+	// 普通 reliable datagram 走 inbox
 	select {
 	case s.inbox <- payload:
 		return nil
@@ -216,11 +228,15 @@ func (s *Session) processDatagram(payload []byte) error {
 		return errors.New("raknet: short reliable datagram")
 	}
 	seq := readUint24LE(payload[1:4])
-	if !s.recvWindow.Receive(seq) {
-		return nil
-	}
+	isNew := s.recvWindow.Receive(seq)
+	// 无论新旧 datagram 都必须 ACK！
+	// 关键不变量：对端 ACK 丢了会重传同一个 seq，如果接收端只对首次 ACK，
+	// 重传永远拿不到 ACK → 对端 cwnd 满后 WaitForRoom 永久阻塞 → user write 卡死。
 	if !s.ackCollector.Add(seq) {
 		s.flushAcks() // 容量已满，立刻发出
+	}
+	if !isNew {
+		return nil
 	}
 
 	eps, err := DecodeEncapsulated(payload[4:])
