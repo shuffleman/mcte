@@ -416,23 +416,27 @@ func (s *Session) writeEncapsulated(body []byte, rel Reliability, orderChan uint
 			OrderChan:   orderChan,
 			Body:        body,
 		}
+		// 计数器都是 atomic.Add(1)，即先加后返回。
+		// 必须减 1 让第一个 index 从 0 开始 — 因为对端 OrderingBuffer.expected
+		// 初值为 0，OrderIndex 若从 1 开始会永远在 pending 中无法释放，
+		// 导致 ConnectionRequestAccepted 等握手包卡死。
 		if rel.IsReliable() {
-			ep.MsgIndex = s.msgIdxOut.Add(1) & 0xFFFFFF
+			ep.MsgIndex = (s.msgIdxOut.Add(1) - 1) & 0xFFFFFF
 		}
 		if rel.IsSequenced() {
-			ep.SeqIndex = s.seqIdxOut.Add(1) & 0xFFFFFF
+			ep.SeqIndex = (s.seqIdxOut.Add(1) - 1) & 0xFFFFFF
 		}
 		if rel.IsOrdered() {
-			ep.OrderIndex = s.orderOut.Add(1) & 0xFFFFFF
+			ep.OrderIndex = (s.orderOut.Add(1) - 1) & 0xFFFFFF
 		}
 		return s.sendDatagram([]EncapsulatedPacket{ep})
 	}
 	// 分片
 	cid := uint16(s.cidOut.Add(1) & 0xFFFF)
-	orderIdx := s.orderOut.Add(1) & 0xFFFFFF
+	orderIdx := (s.orderOut.Add(1) - 1) & 0xFFFFFF
 	var seqIdx uint32
 	if rel.IsSequenced() {
-		seqIdx = s.seqIdxOut.Add(1) & 0xFFFFFF
+		seqIdx = (s.seqIdxOut.Add(1) - 1) & 0xFFFFFF
 	}
 	count := (len(body) + s.maxFrag - 1) / s.maxFrag
 	for i := 0; i < count; i++ {
@@ -453,7 +457,7 @@ func (s *Session) writeEncapsulated(body []byte, rel Reliability, orderChan uint
 			Body:        body[start:end],
 		}
 		if rel.IsReliable() {
-			ep.MsgIndex = s.msgIdxOut.Add(1) & 0xFFFFFF
+			ep.MsgIndex = (s.msgIdxOut.Add(1) - 1) & 0xFFFFFF
 		}
 		if err := s.sendDatagram([]EncapsulatedPacket{ep}); err != nil {
 			return err
