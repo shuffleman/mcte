@@ -9,16 +9,23 @@ type UserConfig struct {
 }
 
 // MCTEConfig 对应 Xray inbound settings.mcteSettings。
+//
+// Fallback 取值优先级（按协议各自取）：
+//   Java (TCP):    FallbackTCP → Fallback
+//   Bedrock (UDP): FallbackUDP → Fallback
 type MCTEConfig struct {
 	Mode           string       `json:"mode,omitempty"` // forward/virtual/hybrid
 	JavaEnabled    bool         `json:"javaEnabled"`
 	BedrockEnabled bool         `json:"bedrockEnabled"`
 	MaxSessions    int          `json:"maxSessions,omitempty"`
+	MOTD           string       `json:"motd,omitempty"`
 	Channel        string       `json:"channel,omitempty"`
 	UUIDField      string       `json:"uuidField,omitempty"`
 	TargetField    string       `json:"targetField,omitempty"`
 	Users          []UserConfig `json:"users"`
-	Fallback       []string     `json:"fallback"` // 真实 MC server 列表
+	Fallback       []string     `json:"fallback,omitempty"`    // 通用 fallback（向后兼容）
+	FallbackTCP    []string     `json:"fallbackTcp,omitempty"` // Java 透传后端
+	FallbackUDP    []string     `json:"fallbackUdp,omitempty"` // Bedrock 透传后端
 	ListenTCP      string       `json:"listenTcp,omitempty"`
 	ListenUDP      string       `json:"listenUdp,omitempty"`
 }

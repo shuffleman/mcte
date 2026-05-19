@@ -34,6 +34,15 @@ func NewListener(cfg MCTEConfig, log *zap.Logger, handle func(net.Conn)) (*Liste
 	if len(cfg.Fallback) > 0 {
 		c.Fallback.Targets = cfg.Fallback
 	}
+	if len(cfg.FallbackTCP) > 0 {
+		c.Fallback.TCP = cfg.FallbackTCP
+	}
+	if len(cfg.FallbackUDP) > 0 {
+		c.Fallback.UDP = cfg.FallbackUDP
+	}
+	if cfg.MOTD != "" {
+		c.Listen.MOTD = cfg.MOTD
+	}
 	if cfg.MaxSessions > 0 {
 		c.Session.MaxConcurrent = cfg.MaxSessions
 	}

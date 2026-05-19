@@ -9,13 +9,26 @@ type User struct {
 }
 
 // Options sing-box JSON 配置中的 minecraft inbound 选项。
+//
+// Fallback 取值优先级（按协议各自取）：
+//   Java (TCP):    FallbackTCP → Fallback
+//   Bedrock (UDP): FallbackUDP → Fallback
+//
+// 推荐分协议配置：
+//   "fallback_tcp": ["127.0.0.1:25566"]
+//   "fallback_udp": ["127.0.0.1:19133"]
+//
+// 旧写法仍兼容（fallback 同时给两边）。
 type Options struct {
 	Listen         string   `json:"listen,omitempty"`
 	ListenUDP      string   `json:"listen_udp,omitempty"`
+	MOTD           string   `json:"motd,omitempty"`
 	Channel        string   `json:"channel,omitempty"`
 	UUIDField      string   `json:"uuid_field,omitempty"`
 	TargetField    string   `json:"target_field,omitempty"`
-	Fallback       []string `json:"fallback"`
+	Fallback       []string `json:"fallback,omitempty"`     // 通用 fallback（向后兼容）
+	FallbackTCP    []string `json:"fallback_tcp,omitempty"` // Java 透传后端
+	FallbackUDP    []string `json:"fallback_udp,omitempty"` // Bedrock 透传后端
 	Users          []User   `json:"users"`
 	MaxSessions    int      `json:"max_sessions,omitempty"`
 	JavaEnabled    bool     `json:"java_enabled,omitempty"`

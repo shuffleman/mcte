@@ -40,6 +40,15 @@ func New(opts Options, log *zap.Logger, route RouteHandler) (*Inbound, error) {
 	if len(opts.Fallback) > 0 {
 		c.Fallback.Targets = opts.Fallback
 	}
+	if len(opts.FallbackTCP) > 0 {
+		c.Fallback.TCP = opts.FallbackTCP
+	}
+	if len(opts.FallbackUDP) > 0 {
+		c.Fallback.UDP = opts.FallbackUDP
+	}
+	if opts.MOTD != "" {
+		c.Listen.MOTD = opts.MOTD
+	}
 	if opts.MaxSessions > 0 {
 		c.Session.MaxConcurrent = opts.MaxSessions
 	}
