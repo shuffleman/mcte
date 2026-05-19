@@ -1,0 +1,30 @@
+{
+  "log": { "loglevel": "info" },
+  "inbounds": [
+    {
+      "tag": "in-mcte",
+      "protocol": "mcte",
+      "settings": {
+        "listenUdp": "127.0.0.1:19132",
+        "bedrockEnabled": true,
+        "channel": "mcte:data",
+        "uuidField": "MCTEUuid",
+        "targetField": "MCTETarget",
+        "users": [
+          {"name": "alice", "uuid": "550e8400-e29b-41d4-a716-446655440000"}
+        ],
+        "fallbackUdp": ["127.0.0.1:1"]
+      }
+    }
+  ],
+  "outbounds": [
+    {"tag": "direct", "protocol": "freedom"},
+    {"tag": "block", "protocol": "blackhole"}
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {"type": "field", "inboundTag": ["in-mcte"], "outboundTag": "direct"}
+    ]
+  }
+}

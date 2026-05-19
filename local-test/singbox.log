@@ -1,0 +1,26 @@
++0800 2026-05-20 01:49:04 [36mINFO[0m network: updated default interface 以太网, index 9
++0800 2026-05-20 01:49:04 [36mINFO[0m inbound/mixed[in-local]: tcp server started at 127.0.0.1:11811
++0800 2026-05-20 01:49:04 [36mINFO[0m sing-box started (0.33s)
++0800 2026-05-20 01:49:14 [36mINFO[0m [[38;5;70m1411543606[0m 0ms] inbound/mixed[in-local]: inbound connection from 127.0.0.1:58605
++0800 2026-05-20 01:49:14 [36mINFO[0m [[38;5;70m1411543606[0m 2ms] inbound/mixed[in-local]: inbound connection to 127.0.0.1:8443
+[mcte 01:49:14.258] recv reliable datagram seq=0 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.259] WriteApp len=294 cwnd=32 inflight=2
+[mcte 01:49:14.260] recv reliable datagram seq=1 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.260] deliver app body len=24 head=fe recvCh_len=0
+[mcte 01:49:14.261] WriteApp len=451 cwnd=32 inflight=3
+[mcte 01:49:14.264] recv reliable datagram seq=2 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.264] deliver app body len=880 head=fe recvCh_len=0
+[mcte 01:49:14.267] WriteApp len=85 cwnd=32 inflight=4
+[mcte 01:49:14.269] WriteApp len=121 cwnd=32 inflight=5
+[mcte 01:49:14.271] recv reliable datagram seq=3 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.271] deliver app body len=1230 head=fe recvCh_len=0
+[mcte 01:49:14.271] recv reliable datagram seq=4 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.271] recv reliable datagram seq=5 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.271] recv reliable datagram seq=6 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.271] deliver app body len=2976 head=fe recvCh_len=0
+[mcte 01:49:14.271] recv reliable datagram seq=7 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.271] recv reliable datagram seq=8 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.271] recv reliable datagram seq=9 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.271] recv reliable datagram seq=10 isNew=true from=127.0.0.1:19132
+[mcte 01:49:14.271] deliver app body len=4352 head=fe recvCh_len=0
+[mcte 01:49:14.272] WriteApp len=45 cwnd=32 inflight=6

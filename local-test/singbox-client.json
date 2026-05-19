@@ -1,0 +1,29 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "in-local",
+      "listen": "127.0.0.1",
+      "listen_port": 11811
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "minecraft",
+      "tag": "out-mcte",
+      "server": "127.0.0.1",
+      "server_port": 19132,
+      "uuid": "550e8400-e29b-41d4-a716-446655440000",
+      "network": "udp",
+      "channel": "mcte:data",
+      "uuid_field": "MCTEUuid",
+      "target_field": "MCTETarget"
+    },
+    {"type": "direct", "tag": "direct"},
+    {"type": "block", "tag": "block"}
+  ],
+  "route": {
+    "final": "out-mcte"
+  }
+}

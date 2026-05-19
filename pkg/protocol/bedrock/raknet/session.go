@@ -352,11 +352,23 @@ func (s *Session) handleOfflineClient(payload []byte) error {
 func (s *Session) handleEncapsulated(ep EncapsulatedPacket) {
 	body := ep.Body
 	if ep.Fragmented {
+		if debug.Enabled() {
+			debug.Logf("frag.Add cid=%d idx=%d/%d size=%d order=%d rel=%d",
+				ep.CompoundID, ep.FragIndex, ep.FragCount, len(ep.Body), ep.OrderIndex, ep.Reliability)
+		}
 		b, done, err := s.frag.Add(ep.CompoundID, ep.FragIndex, ep.FragCount, ep.Body)
+		if debug.Enabled() {
+			groups, dropG, dropT, dropMT, dropMS := s.frag.Stats()
+			debug.Logf("frag.Add result done=%v err=%v len=%d groups=%d drops=(maxG=%d,timeout=%d,maxTotal=%d,maxSize=%d)",
+				done, err, len(b), groups, dropG, dropT, dropMT, dropMS)
+		}
 		if err != nil || !done {
 			return
 		}
 		body = b
+	} else if debug.Enabled() {
+		debug.Logf("ep recv unfragmented order=%d rel=%d size=%d head=%02x",
+			ep.OrderIndex, ep.Reliability, len(ep.Body), firstByte(ep.Body))
 	}
 
 	// 顺序通道：所有 ordered 包（含分片完成后的）都进 ordering buffer 严格按 OrderIndex 出
@@ -672,6 +684,13 @@ func Dial(ctx context.Context, target string) (*Session, error) {
 		_ = sess.Close()
 		return nil, ctx.Err()
 	}
+}
+
+func firstByte(b []byte) byte {
+	if len(b) == 0 {
+		return 0
+	}
+	return b[0]
 }
 
 // GenServerGUID 生成一个进程级稳定的服务端 GUID。
