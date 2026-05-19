@@ -310,6 +310,10 @@ func (s *Session) handleOfflineClient(payload []byte) error {
 }
 
 // handleEncapsulated 处理一条解封装的消息。
+//
+// 关键不变量：fragmented + ordered 的包分片完成后必须 **也走 ordering buffer**，
+// 否则它会绕过 expected 检查直接 deliver，与同 channel 内其他非分片包到达顺序
+// 不一致 → 应用层字节流乱序 → TLS 解密失败 / 协议 framing 错乱。
 func (s *Session) handleEncapsulated(ep EncapsulatedPacket) {
 	body := ep.Body
 	if ep.Fragmented {
@@ -320,11 +324,18 @@ func (s *Session) handleEncapsulated(ep EncapsulatedPacket) {
 		body = b
 	}
 
-	// 顺序通道
-	if ep.Reliability.IsOrdered() && !ep.Fragmented {
+	// 顺序通道：所有 ordered 包（含分片完成后的）都进 ordering buffer 严格按 OrderIndex 出
+	if ep.Reliability.IsOrdered() {
 		ch := ep.OrderChan
 		if int(ch) < len(s.ordering) {
-			for _, queued := range s.ordering[ch].Push(ep) {
+			// 构造已拼装完整 body 的"逻辑包"送进 ordering（保留 OrderIndex/OrderChan）
+			logical := EncapsulatedPacket{
+				Reliability: ep.Reliability,
+				OrderIndex:  ep.OrderIndex,
+				OrderChan:   ep.OrderChan,
+				Body:        body,
+			}
+			for _, queued := range s.ordering[ch].Push(logical) {
 				s.deliver(queued.Body)
 			}
 			return

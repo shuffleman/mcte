@@ -55,6 +55,10 @@ func (b *bedrockBridgeConn) Read(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		// 把同一 batch 里所有 PacketTunnelData 的 payload 顺序累积到 collected。
+		// 之前实现遇到第一个就 return，会丢同 batch 后续 TunnelData → TLS 等上层
+		// 协议看到的字节流不完整或乱序 → 解密失败 / framing 错。
+		var collected []byte
 		for _, pkt := range packets {
 			hdr, m, err := bedrock.ReadVarUint32(pkt)
 			if err != nil {
@@ -67,14 +71,18 @@ func (b *bedrockBridgeConn) Read(p []byte) (int, error) {
 			if len(data) == 0 {
 				continue
 			}
-			n := copy(p, data)
-			if n < len(data) {
-				b.readBufMu.Lock()
-				b.readBuf = append(b.readBuf, data[n:]...)
-				b.readBufMu.Unlock()
-			}
-			return n, nil
+			collected = append(collected, data...)
 		}
+		if len(collected) == 0 {
+			continue
+		}
+		n := copy(p, collected)
+		if n < len(collected) {
+			b.readBufMu.Lock()
+			b.readBuf = append(b.readBuf, collected[n:]...)
+			b.readBufMu.Unlock()
+		}
+		return n, nil
 	}
 }
 
