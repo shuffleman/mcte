@@ -233,8 +233,8 @@ func (s *Session) processDatagram(payload []byte) error {
 		if err != nil {
 			return err
 		}
-		for _, p := range s.resend.NakRange(records) {
-			_, _ = s.conn.WriteTo(p, s.remote)
+		for _, item := range s.resend.NakRange(records) {
+			s.retransmit(item)
 		}
 		return nil
 	}
@@ -527,7 +527,16 @@ func (s *Session) writeEncapsulated(body []byte, rel Reliability, orderChan uint
 	return nil
 }
 
+// sendDatagram 发送新 datagram；reliable EP 自动加入 resend 队列跟踪。
 func (s *Session) sendDatagram(eps []EncapsulatedPacket) error {
+	_, err := s.sendDatagramTracked(eps, true)
+	return err
+}
+
+// sendDatagramTracked 发送 datagram 并返回分配的 datagram seq。
+// 当 track=true 且包含 reliable EP 时把 EPs 加入 resend 队列；
+// 当 track=false 时不入队（用于重传，由 retransmit 通过 Rekey 维护跟踪）。
+func (s *Session) sendDatagramTracked(eps []EncapsulatedPacket, track bool) (uint32, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	payload := EncodeEncapsulated(eps)
@@ -539,7 +548,10 @@ func (s *Session) sendDatagram(eps []EncapsulatedPacket) error {
 	out = append(out, payload...)
 	_, err := s.conn.WriteTo(out, s.remote)
 	if err != nil {
-		return err
+		return seq, err
+	}
+	if !track {
+		return seq, nil
 	}
 	hasReliable := false
 	for _, ep := range eps {
@@ -549,9 +561,9 @@ func (s *Session) sendDatagram(eps []EncapsulatedPacket) error {
 		}
 	}
 	if hasReliable {
-		s.resend.Add(seq, out)
+		s.resend.Add(seq, eps)
 	}
-	return nil
+	return seq, nil
 }
 
 // RunBackground 后台循环：dispatch、flush ACK、超时重传、心跳保活、连接超时。
@@ -607,9 +619,30 @@ func (s *Session) flushAcks() {
 }
 
 func (s *Session) doResend() {
-	for _, p := range s.resend.DueForResend(time.Now()) {
-		_, _ = s.conn.WriteTo(p, s.remote)
+	for _, item := range s.resend.DueForResend(time.Now()) {
+		s.retransmit(item)
 	}
+}
+
+// retransmit 用**新**的 datagram seq 重发 item.EPs，并 Rekey resend queue
+// 让对应 entry 跟踪新 seq。
+//
+// 关键修复：用新 datagram seq 而不是复用原 seq。某些路径性丢包
+// （运营商/路由器按 5-tuple+payload hash 持续丢同一字节序列）会让原 seq
+// 的重传永远到不了；新 seq 通常能避开这种确定性丢包。
+// 原 EP 的 MsgIndex/FragIndex/OrderIndex 保持不变，符合 RakNet 标准。
+func (s *Session) retransmit(item RetransmitItem) {
+	if debug.Enabled() {
+		debug.Logf("retransmit oldSeq=%d eps=%d", item.OriginalSeq, len(item.EPs))
+	}
+	newSeq, err := s.sendDatagramTracked(item.EPs, false)
+	if err != nil {
+		if debug.Enabled() {
+			debug.Logf("retransmit write err=%v", err)
+		}
+		return
+	}
+	s.resend.Rekey(item.OriginalSeq, newSeq)
 }
 
 // NewClientSession 构造客户端 Session（不主动监听，由 Dial 拨号驱动）。

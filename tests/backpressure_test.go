@@ -24,7 +24,7 @@ func TestResendQueueBlockUntilAck(t *testing.T) {
 	q := raknet.NewResendQueue(200*time.Millisecond, 8)
 	// 填满
 	for i := 0; i < 32; i++ {
-		q.Add(uint32(i), []byte{0x84, 0, 0, 0})
+		q.Add(uint32(i), []raknet.EncapsulatedPacket{{Reliability: raknet.RelReliable, Body: []byte{0x01}}})
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -49,7 +49,7 @@ func TestResendQueueBlockUntilAck(t *testing.T) {
 func TestResendQueueCongestionControl(t *testing.T) {
 	q := raknet.NewResendQueue(50*time.Millisecond, 8)
 	for i := 0; i < 32; i++ {
-		q.Add(uint32(i), []byte{0x84, 0, 0, 0})
+		q.Add(uint32(i), []raknet.EncapsulatedPacket{{Reliability: raknet.RelReliable, Body: []byte{0x01}}})
 	}
 	before := q.Cwnd()
 	q.NakRange([]raknet.AckRecord{{Start: 0, End: 0}})

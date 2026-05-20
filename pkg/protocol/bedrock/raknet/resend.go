@@ -7,21 +7,19 @@ import (
 )
 
 // resendEntry 已发送但未收到 ACK 的 datagram。
+//
+// 关键设计：存的是 EncapsulatedPacket 列表（不是原 datagram 字节）。
+// 重传时调用方应当**用新的 datagram seq**重新封包发出 — 因为某些路径性丢包
+// （运营商/路由器按 5-tuple+payload hash 持续丢同一字节序列）会导致原 seq 的
+// 重传永远到不了；新 seq 通常能避开。
 type resendEntry struct {
-	seq      uint32
-	payload  []byte // 完整 datagram（含首字节 flag + 3B seq）
-	sent     time.Time
-	attempts int
+	originalSeq uint32                // 原始 datagram seq（用于查找/移除）
+	eps         []EncapsulatedPacket // 该 datagram 内的 EP（重传时复用 MsgIndex/OrderIndex 等）
+	sent        time.Time
+	attempts    int
 }
 
 // ResendQueue 维护在飞数据，并以 cwnd 暴露发送侧背压。
-//
-// 拥塞控制：标准 slow start + AIMD。
-//   - cwnd 初值 minCwnd；每收到一个新 ACK：
-//     · inflight < ssthresh 时 cwnd += 1 (slow start)
-//     · 否则每 cwnd 个 ACK cwnd += 1     (congestion avoidance)
-//   - 收到 NAK 或 RTO 触发重传时 ssthresh = max(cwnd/2, minCwnd)，cwnd = ssthresh
-//   - 永远不超过 maxCwnd
 type ResendQueue struct {
 	mu      sync.Mutex
 	entries map[uint32]*resendEntry
@@ -30,14 +28,13 @@ type ResendQueue struct {
 
 	cwnd      int
 	ssthresh  int
-	caCounter int // congestion avoidance 累计 ACK 计数
+	caCounter int
 	minCwnd   int
 	maxCwnd   int
 
-	// 每次空间变化时关闭并重建，唤醒所有 WaitForRoom 等待者
 	roomCh chan struct{}
 
-	dropAttempts uint64 // 重试用尽丢弃的条目数
+	dropAttempts uint64
 }
 
 func NewResendQueue(rto time.Duration, maxTry int) *ResendQueue {
@@ -77,13 +74,26 @@ func (q *ResendQueue) WaitForRoom(ctx context.Context) error {
 	}
 }
 
-// Add 加入新发送的 datagram。
-func (q *ResendQueue) Add(seq uint32, payload []byte) {
-	cp := make([]byte, len(payload))
-	copy(cp, payload)
+// Add 加入新发送的 datagram。eps 必须不再被外部修改（调用方传所有权）。
+func (q *ResendQueue) Add(seq uint32, eps []EncapsulatedPacket) {
 	q.mu.Lock()
-	q.entries[seq] = &resendEntry{seq: seq, payload: cp, sent: time.Now()}
+	q.entries[seq] = &resendEntry{
+		originalSeq: seq,
+		eps:         eps,
+		sent:        time.Now(),
+	}
 	q.mu.Unlock()
+}
+
+// Rekey 把 entry 从 oldSeq 移到 newSeq。用于重传时 datagram seq 变更后维持跟踪。
+func (q *ResendQueue) Rekey(oldSeq, newSeq uint32) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if e, ok := q.entries[oldSeq]; ok {
+		delete(q.entries, oldSeq)
+		e.originalSeq = newSeq
+		q.entries[newSeq] = e
+	}
 }
 
 // AckRange 收到 ACK 范围，移除对应条目并触发 cwnd 增长。
@@ -108,18 +118,25 @@ func (q *ResendQueue) AckRange(records []AckRecord) {
 	q.mu.Unlock()
 }
 
-// NakRange 收到 NAK，立即返回需要重传的 payloads；触发 cwnd 减半。
-func (q *ResendQueue) NakRange(records []AckRecord) [][]byte {
+// RetransmitItem 表示一项需要重传的数据。
+type RetransmitItem struct {
+	OriginalSeq uint32
+	EPs         []EncapsulatedPacket
+}
+
+// NakRange 收到 NAK，立即返回需要重传的 items；触发 cwnd 减半。
+// 调用方应当用新 seq 重新发出 EPs，并调 Rekey 更新跟踪。
+func (q *ResendQueue) NakRange(records []AckRecord) []RetransmitItem {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	out := [][]byte{}
+	out := []RetransmitItem{}
 	naked := 0
 	for _, r := range records {
 		for s := r.Start; s <= r.End; s++ {
 			if e, ok := q.entries[s]; ok {
 				e.attempts++
 				e.sent = time.Now()
-				out = append(out, e.payload)
+				out = append(out, RetransmitItem{OriginalSeq: s, EPs: e.eps})
 				naked++
 			}
 			if s == r.End {
@@ -133,11 +150,12 @@ func (q *ResendQueue) NakRange(records []AckRecord) [][]byte {
 	return out
 }
 
-// DueForResend 返回 RTO 超时仍未 ACK 的 payloads，并触发 cwnd 减半。
-func (q *ResendQueue) DueForResend(now time.Time) [][]byte {
+// DueForResend 返回 RTO 超时仍未 ACK 的 items；触发 cwnd 减半。
+// 调用方用新 seq 重新发出 EPs 并 Rekey。
+func (q *ResendQueue) DueForResend(now time.Time) []RetransmitItem {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	out := [][]byte{}
+	out := []RetransmitItem{}
 	timedOut := 0
 	for seq, e := range q.entries {
 		if now.Sub(e.sent) >= q.rto {
@@ -148,7 +166,7 @@ func (q *ResendQueue) DueForResend(now time.Time) [][]byte {
 				q.dropAttempts++
 				continue
 			}
-			out = append(out, e.payload)
+			out = append(out, RetransmitItem{OriginalSeq: seq, EPs: e.eps})
 			timedOut++
 		}
 	}
@@ -173,7 +191,13 @@ func (q *ResendQueue) Cwnd() int {
 	return q.cwnd
 }
 
-// onAck 假设持锁；按 slow start / CA 增长 cwnd。
+// DropAttempts 重试用尽丢弃的条目数。
+func (q *ResendQueue) DropAttempts() uint64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.dropAttempts
+}
+
 func (q *ResendQueue) onAck(n int) {
 	for i := 0; i < n; i++ {
 		if q.cwnd < q.ssthresh {
@@ -191,7 +215,6 @@ func (q *ResendQueue) onAck(n int) {
 	}
 }
 
-// onLoss 持锁；丢包时减半。
 func (q *ResendQueue) onLoss() {
 	q.ssthresh = q.cwnd / 2
 	if q.ssthresh < q.minCwnd {
@@ -201,7 +224,6 @@ func (q *ResendQueue) onLoss() {
 	q.caCounter = 0
 }
 
-// broadcastRoom 持锁；唤醒所有等 cwnd 的 waiter。
 func (q *ResendQueue) broadcastRoom() {
 	close(q.roomCh)
 	q.roomCh = make(chan struct{})
