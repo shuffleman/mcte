@@ -5,84 +5,80 @@ import (
 	"sync"
 )
 
-// SeqWindow 维护一个 24-bit 序号窗口，用于去重接收。
+// SeqWindow 用于 reliable datagram 去重，保留近 N 个 seq 已收记录。
 type SeqWindow struct {
-	mu      sync.Mutex
-	seen    map[uint32]struct{}
-	highest uint32
-	size    uint32
+	size int
+	high uint32
+	set  map[uint32]struct{}
 }
 
-func NewSeqWindow(size uint32) *SeqWindow {
-	if size == 0 {
-		size = 2048
+func NewSeqWindow(size int) *SeqWindow {
+	return &SeqWindow{
+		size: size,
+		set:  make(map[uint32]struct{}),
 	}
-	return &SeqWindow{seen: make(map[uint32]struct{}, size), size: size}
 }
 
-// Receive 返回 true 表示首次见到该序号。
+// Receive 标记一个 seq 已收到，返回 true 表示首次收到。
 func (w *SeqWindow) Receive(seq uint32) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if _, ok := w.seen[seq]; ok {
+	if _, ok := w.set[seq]; ok {
 		return false
 	}
-	w.seen[seq] = struct{}{}
-	if seq > w.highest {
-		w.highest = seq
+	w.set[seq] = struct{}{}
+	if seq > w.high {
+		w.high = seq
 	}
-	if uint32(len(w.seen)) > w.size {
-		var threshold uint32
-		if w.highest > w.size {
-			threshold = w.highest - w.size
-		}
-		for k := range w.seen {
-			if k < threshold {
-				delete(w.seen, k)
+	// 简易过期：超过 size 的旧 seq 直接清掉
+	if len(w.set) > w.size {
+		for k := range w.set {
+			if k+uint32(w.size) < w.high {
+				delete(w.set, k)
 			}
 		}
 	}
 	return true
 }
 
-// MissingBefore 返回 [0, highest] 内未收到的序号（用于发 NAK）。
-func (w *SeqWindow) MissingBefore(maxN int) []uint32 {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	out := []uint32{}
-	if w.highest == 0 {
-		return out
+// AckCollector 待发 ACK 序号收集器，flush 时合并为 records。
+// Add 由 dispatch / inbox goroutine 调用，Flush 由 RunBackground 的 ackTick
+// goroutine 调用，必须 mutex 保护 — 否则 fatal: concurrent map iteration and map write。
+type AckCollector struct {
+	mu  sync.Mutex
+	set map[uint32]struct{}
+}
+
+func NewAckCollector() *AckCollector {
+	return &AckCollector{set: make(map[uint32]struct{})}
+}
+
+// Add 加入一个 seq；超过阈值返回 false。
+func (a *AckCollector) Add(seq uint32) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.set) >= 4096 {
+		return false
 	}
-	for i := uint32(0); i <= w.highest && len(out) < maxN; i++ {
-		if _, ok := w.seen[i]; !ok {
+	a.set[seq] = struct{}{}
+	return true
+}
+
+// MissingBefore 返回 [0, highest] 内未收到的序号（用于发 NAK）。
+func (a *AckCollector) MissingBefore(highest uint32) []uint32 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.set) == 0 {
+		return nil
+	}
+	var out []uint32
+	for i := uint32(0); i <= highest; i++ {
+		if _, ok := a.set[i]; !ok {
 			out = append(out, i)
 		}
 	}
 	return out
 }
 
-// AckCollector 累积已收到的序号，定时编码为 ACK 发回。
-// 容量上限：超过 maxPending 时 Add 会返回 false 通知调用方应立即触发 flush。
-type AckCollector struct {
-	mu         sync.Mutex
-	set        map[uint32]struct{}
-	maxPending int
-}
-
-func NewAckCollector() *AckCollector {
-	return &AckCollector{set: make(map[uint32]struct{}), maxPending: 4096}
-}
-
-// Add 返回 true 表示加入成功；false 表示已满，调用方应立即 Flush 发包。
-func (a *AckCollector) Add(seq uint32) bool {
-	a.mu.Lock()
-	a.set[seq] = struct{}{}
-	full := len(a.set) >= a.maxPending
-	a.mu.Unlock()
-	return !full
-}
-
-// Flush 取出当前累积的序号并清空。
+// Flush 取出当前收集的 seq 并清空。
 func (a *AckCollector) Flush() []uint32 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -99,46 +95,33 @@ func (a *AckCollector) Flush() []uint32 {
 }
 
 // OrderingBuffer 单 ordering channel 内的乱序重排序缓冲。
-// pending 容量上限 maxPending；超出时强制跳过 expected 释放最旧条目，
-// 防止恶意客户端构造长缺洞使内存耗尽。
+//
+// pending 容量上限 maxPending；超出时返回 overflow=true 让上层主动断开 session。
+// RakNet ReliableOrdered 语义不允许 silent skip — 任何缺失都会让 HTTP 等上层协议
+// 拿到不完整数据（curl 看似成功但响应被切一段）。当 pending 长时间积压（意味着
+// 某个 OrderIndex 已被 ResendQueue 放弃重传），主动断开让上层协议感知失败并重连。
 type OrderingBuffer struct {
 	expected   uint32
 	pending    map[uint32][]EncapsulatedPacket
 	maxPending int
-	skipped    uint64
+	overflowed bool
 }
 
 func NewOrderingBuffer() *OrderingBuffer {
 	return &OrderingBuffer{
 		pending:    make(map[uint32][]EncapsulatedPacket),
-		maxPending: 1024,
+		maxPending: 4096,
 	}
 }
 
-// Push 收一个 ordered 包，返回当前可顺序释放的包数组。
-func (o *OrderingBuffer) Push(ep EncapsulatedPacket) []EncapsulatedPacket {
+// Push 收一个 ordered 包，返回当前可顺序释放的包数组及 overflow 标志。
+// overflow=true 表示 pending 已超过容量上限，调用方应当立即断开 session。
+func (o *OrderingBuffer) Push(ep EncapsulatedPacket) (out []EncapsulatedPacket, overflow bool) {
 	if ep.OrderIndex < o.expected {
-		return nil
+		return nil, false
 	}
 	o.pending[ep.OrderIndex] = append(o.pending[ep.OrderIndex], ep)
 
-	// 超容量：强制推进 expected 到 pending 中最小的 OrderIndex，并释放可释放的连续块
-	if len(o.pending) > o.maxPending {
-		var minIdx uint32
-		first := true
-		for k := range o.pending {
-			if first || k < minIdx {
-				minIdx = k
-				first = false
-			}
-		}
-		if minIdx > o.expected {
-			o.skipped += uint64(minIdx - o.expected)
-			o.expected = minIdx
-		}
-	}
-
-	var out []EncapsulatedPacket
 	for {
 		eps, ok := o.pending[o.expected]
 		if !ok {
@@ -148,8 +131,19 @@ func (o *OrderingBuffer) Push(ep EncapsulatedPacket) []EncapsulatedPacket {
 		out = append(out, eps...)
 		o.expected++
 	}
-	return out
+
+	if len(o.pending) > o.maxPending {
+		o.overflowed = true
+		return out, true
+	}
+	return out, false
 }
 
-// Skipped 因超容量被跳过的 order index 数（监控用）。
-func (o *OrderingBuffer) Skipped() uint64 { return o.skipped }
+// Skipped 当 buffer 曾经溢出返回 1，否则 0（测试 / 监控兼容用）。
+// 新实现不再 silent skip ordered index：溢出由 Push 的 overflow 返回值通知调用方。
+func (o *OrderingBuffer) Skipped() uint64 {
+	if o.overflowed {
+		return 1
+	}
+	return 0
+}

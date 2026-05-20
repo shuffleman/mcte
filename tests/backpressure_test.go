@@ -75,18 +75,27 @@ func TestAckCollectorCapacity(t *testing.T) {
 	}
 }
 
-// OrderingBuffer 超容量强制跳过 expected。
+// OrderingBuffer 缺片长时间未补上应当返回 overflow（上层据此 close session），
+// 而不是 silent skip OrderIndex（会导致 HTTP 等上层协议拿到不完整数据）。
 func TestOrderingBufferOverflow(t *testing.T) {
 	b := raknet.NewOrderingBuffer()
-	// 制造长缺洞：order index 跳过 0，从 1 起塞 1500 条
-	for i := uint32(1); i < 1500; i++ {
-		b.Push(raknet.EncapsulatedPacket{
+	overflowSeen := false
+	// 制造长缺洞：order index 跳过 0，从 1 起塞至超过 maxPending(4096)
+	for i := uint32(1); i < 6000; i++ {
+		_, overflow := b.Push(raknet.EncapsulatedPacket{
 			Reliability: raknet.RelReliableOrdered,
 			OrderIndex:  i,
 			Body:        []byte{0x80},
 		})
+		if overflow {
+			overflowSeen = true
+			break
+		}
+	}
+	if !overflowSeen {
+		t.Fatalf("expected overflow=true when pending exceeds maxPending")
 	}
 	if b.Skipped() == 0 {
-		t.Fatalf("expected skipped > 0")
+		t.Fatalf("expected Skipped()=1 after overflow")
 	}
 }

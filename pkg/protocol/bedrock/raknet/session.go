@@ -58,8 +58,9 @@ type Session struct {
 	orderOut  atomic.Uint32
 	seqIdxOut atomic.Uint32 // sequenced packet 计数器
 	cidOut    atomic.Uint32
-	resend    *ResendQueue
-	writeMu   sync.Mutex
+	resend       *ResendQueue
+	writeMu      sync.Mutex
+	lastDropSeen uint64 // 仅 doResend tick 访问，无并发
 
 	lastRecv atomic.Int64
 	closed   chan struct{}
@@ -382,8 +383,18 @@ func (s *Session) handleEncapsulated(ep EncapsulatedPacket) {
 				OrderChan:   ep.OrderChan,
 				Body:        body,
 			}
-			for _, queued := range s.ordering[ch].Push(logical) {
+			released, overflow := s.ordering[ch].Push(logical)
+			for _, queued := range released {
 				s.deliver(queued.Body)
+			}
+			if overflow {
+				// 缺片长时间没补上（对端 ResendQueue 已放弃），不能 silent skip
+				// 否则上层 HTTP/TCP 拿到不完整数据。主动 close 让上层重连。
+				if debug.Enabled() {
+					debug.Logf("ordering buffer overflow ch=%d expected=%d order=%d — closing session",
+						ch, s.ordering[ch].expected, ep.OrderIndex)
+				}
+				_ = s.Close()
 			}
 			return
 		}
@@ -500,9 +511,12 @@ func (s *Session) writeEncapsulated(body []byte, rel Reliability, orderChan uint
 		seqIdx = (s.seqIdxOut.Add(1) - 1) & 0xFFFFFF
 	}
 	count := (len(body) + s.maxFrag - 1) / s.maxFrag
+	// 均匀切片 — 避免最后一片远小于其他片造成的 DPI 特征
+	// （例如 3894 字节切 4 片：[974,974,974,972] 而不是 [1200,1200,1200,294]）。
+	chunkSize := (len(body) + count - 1) / count
 	for i := 0; i < count; i++ {
-		start := i * s.maxFrag
-		end := start + s.maxFrag
+		start := i * chunkSize
+		end := start + chunkSize
 		if end > len(body) {
 			end = len(body)
 		}
@@ -549,6 +563,12 @@ func (s *Session) sendDatagramTracked(eps []EncapsulatedPacket, track bool) (uin
 	_, err := s.conn.WriteTo(out, s.remote)
 	if err != nil {
 		return seq, err
+	}
+	if debug.Enabled() && len(eps) > 0 {
+		ep := eps[0]
+		debug.Logf("send seq=%d track=%v eps=%d frag=%v fragIdx=%d/%d order=%d rel=%v msgIdx=%d bodyLen=%d head=%02x",
+			seq, track, len(eps), ep.Fragmented, ep.FragIndex, ep.FragCount,
+			ep.OrderIndex, ep.Reliability, ep.MsgIndex, len(ep.Body), firstByte(ep.Body))
 	}
 	if !track {
 		return seq, nil
@@ -619,6 +639,17 @@ func (s *Session) flushAcks() {
 }
 
 func (s *Session) doResend() {
+	// ResendQueue 在 maxTry 用尽后 silent drop entry — 对端会永远等那条 OrderIndex。
+	// 检测到有放弃的条目时立即 close session 而不是让数据 silent corruption。
+	if s.resend.DropAttempts() > s.lastDropSeen {
+		s.lastDropSeen = s.resend.DropAttempts()
+		if debug.Enabled() {
+			debug.Logf("resend queue dropped entry (maxTry exceeded) — closing session, drops=%d",
+				s.lastDropSeen)
+		}
+		_ = s.Close()
+		return
+	}
 	for _, item := range s.resend.DueForResend(time.Now()) {
 		s.retransmit(item)
 	}
@@ -632,17 +663,47 @@ func (s *Session) doResend() {
 // 的重传永远到不了；新 seq 通常能避开这种确定性丢包。
 // 原 EP 的 MsgIndex/FragIndex/OrderIndex 保持不变，符合 RakNet 标准。
 func (s *Session) retransmit(item RetransmitItem) {
-	if debug.Enabled() {
-		debug.Logf("retransmit oldSeq=%d eps=%d", item.OriginalSeq, len(item.EPs))
-	}
-	newSeq, err := s.sendDatagramTracked(item.EPs, false)
+	// 关键：在原 EPs 后附加一个随机 padding EP（Reliability=Unreliable，
+	// body 头是 IDDetectLostConnections — 对端 deliver 会 silent return）。
+	// 这让重传 datagram 的字节序列每次都不同，绕过 GFW/路径按 payload byte-pattern
+	// 的确定性丢包（这是用新 datagram seq 仍然无法解决的更深层问题）。
+	eps := make([]EncapsulatedPacket, 0, len(item.EPs)+1)
+	eps = append(eps, item.EPs...)
+	eps = append(eps, buildPaddingEP())
+
+	newSeq, err := s.sendDatagramTracked(eps, false)
 	if err != nil {
 		if debug.Enabled() {
 			debug.Logf("retransmit write err=%v", err)
 		}
 		return
 	}
+	if debug.Enabled() {
+		for _, ep := range item.EPs {
+			debug.Logf("retransmit oldSeq=%d newSeq=%d frag=%v fragIdx=%d/%d order=%d rel=%v msgIdx=%d bodyLen=%d head=%02x padLen=%d",
+				item.OriginalSeq, newSeq, ep.Fragmented, ep.FragIndex, ep.FragCount,
+				ep.OrderIndex, ep.Reliability, ep.MsgIndex, len(ep.Body), firstByte(ep.Body),
+				len(eps[len(eps)-1].Body))
+		}
+	}
 	s.resend.Rekey(item.OriginalSeq, newSeq)
+}
+
+// buildPaddingEP 构造一个随机长度的 unreliable padding EP。
+// body 第一字节固定 IDDetectLostConnections（0x04）— 对端 deliver case 已 silent return；
+// 后续字节随机。每次调用 body 长度也随机（8..64），保证连续重传时 datagram 字节序列不同。
+//
+// 使用 math/rand 包级函数（v1 内部 lockedSource，并发安全；不需要密码学强度）。
+func buildPaddingEP() EncapsulatedPacket {
+	const minLen, maxLen = 8, 64
+	n := minLen + rand.Intn(maxLen-minLen+1)
+	body := make([]byte, n)
+	body[0] = IDDetectLostConnections
+	_, _ = rand.Read(body[1:])
+	return EncapsulatedPacket{
+		Reliability: RelUnreliable,
+		Body:        body,
+	}
 }
 
 // NewClientSession 构造客户端 Session（不主动监听，由 Dial 拨号驱动）。
