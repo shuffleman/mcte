@@ -46,6 +46,14 @@ func NewUDPListener(addr string, queue int, opt Options) (*UDPListener, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 设置 socket buffer 到 4MB —— 跨境高 RTT 链路下 cwnd burst + NAK 重传可能瞬间塞满
+	// 默认 ~200KB 的 SO_RCVBUF/SO_SNDBUF，OS 内核会 silently drop 超出部分的 datagram。
+	// 这种内核层 drop 看起来像"deterministic packet loss"，在 server log 表现为
+	// "同一条 EP 重传 N 次都到不了对端"。设大 buffer 避免这条路径。
+	if udpConn, ok := pc.(*net.UDPConn); ok {
+		_ = udpConn.SetReadBuffer(4 * 1024 * 1024)
+		_ = udpConn.SetWriteBuffer(4 * 1024 * 1024)
+	}
 	if queue <= 0 {
 		queue = 256
 	}

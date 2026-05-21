@@ -42,16 +42,21 @@ func NewResendQueue(rto time.Duration, maxTry int) *ResendQueue {
 		rto = 200 * time.Millisecond
 	}
 	if maxTry == 0 {
-		maxTry = 24
+		// 跨境/无线链路 UDP 丢包率常达 20%，maxTry=24 (4.8s) 不够 — 实测跨网络 100 次
+		// 中 33 次因单 EP 重传用尽 close session。提高到 60 (12s) 给单 EP 99.99% 成功率。
+		maxTry = 60
 	}
+	// 拥塞窗口上限调低（之前 2048 太激进 → 跨网络场景 burst 触发上游 rate limit，
+	// 短时间内整段数据被链路黑洞丢弃，client 收不到任何包）。
+	// 64 datagrams × 1027 bytes / 90ms RTT ≈ 700 KB/s 已能满足大多数应用层需求。
 	return &ResendQueue{
 		entries:  make(map[uint32]*resendEntry),
 		rto:      rto,
 		maxTry:   maxTry,
-		cwnd:     32,
-		ssthresh: 256,
+		cwnd:     8,
+		ssthresh: 32,
 		minCwnd:  4,
-		maxCwnd:  2048,
+		maxCwnd:  64,
 		roomCh:   make(chan struct{}),
 	}
 }

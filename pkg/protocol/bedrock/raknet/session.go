@@ -80,8 +80,11 @@ func NewSession(pc net.PacketConn, remote net.Addr, mtu uint16, serverGUID int64
 		recvWindow:   NewSeqWindow(8192),
 		frag:         NewFragmentAssembler(16 * 1024 * 1024),
 		ackCollector: NewAckCollector(),
-		recvCh:        make(chan []byte, 256),
-		inbox:         make(chan []byte, 512),
+		// inbox / recvCh 容量调大：跨境高 RTT 场景下 cwnd 可能 burst 大量 reliable
+		// datagram，原 512/256 容量会被 burst 打满 → Feed 丢包 → server 重传 → 加重拥塞。
+		// 调到 4096/1024 后单个 session 在 cwnd=64 时仍有 64 倍 headroom。
+		recvCh:        make(chan []byte, 1024),
+		inbox:         make(chan []byte, 4096),
 		resend:        NewResendQueue(200*time.Millisecond, 24),
 		stopped:       make(chan struct{}),
 		closed:        make(chan struct{}),
@@ -111,7 +114,20 @@ func (s *Session) ServerGUID() int64 { return s.serverGUID }
 func (s *Session) Closed() <-chan struct{} { return s.closed }
 
 // ReadApp 读取下一个应用层 packet（>= NumInternalMessages 的 packet ID 起始字节）。
+// 关键：session 已 close 时，仍然 drain 剩余 recvCh 数据后再报 ErrClosed —
+// 否则 select 在 closed 和 recvCh 同时 ready 时会随机选 closed 路径，丢弃已收到
+// 但还没消费的应用层数据，导致上层 HTTP body 截断（schannel: server closed abruptly）。
 func (s *Session) ReadApp(ctx context.Context) ([]byte, error) {
+	// 优先取 recvCh 中已有数据（非阻塞 try）。
+	select {
+	case b, ok := <-s.recvCh:
+		if !ok {
+			return nil, net.ErrClosed
+		}
+		return b, nil
+	default:
+	}
+	// recvCh 空时再监听三路：新数据 / close / ctx 取消。
 	select {
 	case b, ok := <-s.recvCh:
 		if !ok {
@@ -119,7 +135,16 @@ func (s *Session) ReadApp(ctx context.Context) ([]byte, error) {
 		}
 		return b, nil
 	case <-s.closed:
-		return nil, net.ErrClosed
+		// close 后 recvCh 可能仍有未消费数据，再 drain 一次。
+		select {
+		case b, ok := <-s.recvCh:
+			if !ok {
+				return nil, net.ErrClosed
+			}
+			return b, nil
+		default:
+			return nil, net.ErrClosed
+		}
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -145,16 +170,37 @@ func (s *Session) WriteAppCtx(ctx context.Context, body []byte) error {
 	return s.writeEncapsulated(body, RelReliableOrdered, 0)
 }
 
-// Close 关闭 session 并发出 Disconnect 通知。
+// Close 关闭 session：先把 in-flight reliable EP flush（等待 ACK 或 maxTry 用尽），
+// 再发 DisconnectNotification，最后停止 RunBackground。
+//
+// 如果不 flush 直接 close，RunBackground 退出 → ResendQueue 不再重传 → 缺片永远不到 →
+// 对端 OrderingBuffer 卡住 → 上层协议读取超时切断（症状是 HTTP body 截断、TLS abrupt close）。
 func (s *Session) Close() error {
 	s.stopOnce.Do(func() {
-		// 尽力发一个 disconnect notification
+		s.flushBeforeClose()
 		_ = s.writeEncapsulated([]byte{IDDisconnectNotification}, RelReliableOrdered, 0)
 		close(s.stopped)
 		s.state.Store(int32(StateClosed))
 		close(s.closed)
 	})
 	return nil
+}
+
+// flushBeforeClose 等待 ResendQueue 清空或最多 2 秒超时。
+// 在此期间 RunBackground 仍在运行，会持续重传未 ACK 的 reliable EP。
+// 跨境丢包链路上 2 秒已经覆盖 10 个 RTO 周期，足够让正常 in-flight 完成 ACK；
+// 仍未到达的（路径黑洞）继续等也无意义，直接 close 让上层重连更快。
+func (s *Session) flushBeforeClose() {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.resend.Len() == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if debug.Enabled() {
+		debug.Logf("flushBeforeClose timeout, %d entries still in-flight", s.resend.Len())
+	}
 }
 
 // Feed 由 UDP listener 投入一个属于本会话的原始 datagram。
@@ -182,7 +228,15 @@ func (s *Session) Feed(payload []byte) error {
 	case <-s.closed:
 		return net.ErrClosed
 	default:
-		s.dropInbox.Add(1)
+		n := s.dropInbox.Add(1)
+		if debug.Enabled() {
+			// 截断显示 seq 让排查 retransmit 是否被 inbox drop 吞掉
+			var seq uint32
+			if len(payload) >= 4 {
+				seq = readUint24LE(payload[1:4])
+			}
+			debug.Logf("INBOX_DROP seq=%d total=%d (channel full, dispatchLoop too slow)", seq, n)
+		}
 		return nil
 	}
 }
@@ -253,7 +307,10 @@ func (s *Session) processDatagram(payload []byte) error {
 	// 关键不变量：对端 ACK 丢了会重传同一个 seq，如果接收端只对首次 ACK，
 	// 重传永远拿不到 ACK → 对端 cwnd 满后 WaitForRoom 永久阻塞 → user write 卡死。
 	if !s.ackCollector.Add(seq) {
-		s.flushAcks() // 容量已满，立刻发出
+		// 容量已满，先立即发出，再补加本次 seq 否则会 silent drop —
+		// 对端永远收不到这条 ACK，最终触发 RTO + 重传/maxTry 用尽。
+		s.flushAcks()
+		s.ackCollector.Add(seq)
 	}
 	if !isNew {
 		return nil
@@ -550,10 +607,32 @@ func (s *Session) sendDatagram(eps []EncapsulatedPacket) error {
 // sendDatagramTracked 发送 datagram 并返回分配的 datagram seq。
 // 当 track=true 且包含 reliable EP 时把 EPs 加入 resend 队列；
 // 当 track=false 时不入队（用于重传，由 retransmit 通过 Rekey 维护跟踪）。
+//
+// **dynamic padding to minDatagramSize**：跨境链路上某些 NAT/QoS 设备会确定性丢弃
+// 特定 size 范围（实测 ~400 字节）的 UDP 包。该现象表现为"某条 small EP 重传 60 次
+// 都到不了对端" — server 端读出 770KB 完整数据写入 RakNet，但 RakNet 层 maxTry 用尽
+// 提前 close。把所有 datagram 用 random padding EP 补足到 minDatagramSize=800 后，
+// small EP 的 wire 表现跟大 EP 一致，绕过 size-based 黑洞。
+// padding EP 用 Reliability=Unreliable + IDDetectLostConnections head，对端 deliver
+// silent return；body 长度随机让重传字节序列每次不同。
 func (s *Session) sendDatagramTracked(eps []EncapsulatedPacket, track bool) (uint32, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	payload := EncodeEncapsulated(eps)
+	const minDatagramSize = 800
+	if 4+len(payload) < minDatagramSize {
+		// EP body len + body itself 之外，padding EP header 是 1 byte flags + 2 byte bitlen
+		// = 3 bytes（Unreliable EP 无 MsgIndex/SeqIndex/OrderIndex/Frag）。
+		const padHeaderSize = 3
+		need := minDatagramSize - 4 - len(payload) - padHeaderSize
+		// 在需要的基础上额外加 0-32 字节随机，让重传时即使 body 大小固定，padding 总长也不同。
+		extra := 0
+		if r := rand.Intn(33); r > 0 {
+			extra = r
+		}
+		pad := buildPaddingEPOfSize(need + extra)
+		payload = append(payload, EncodeEncapsulated([]EncapsulatedPacket{pad})...)
+	}
 	seq := s.seqOut.Add(1) - 1
 	seq &= 0xFFFFFF
 	out := make([]byte, 0, 4+len(payload))
@@ -566,9 +645,9 @@ func (s *Session) sendDatagramTracked(eps []EncapsulatedPacket, track bool) (uin
 	}
 	if debug.Enabled() && len(eps) > 0 {
 		ep := eps[0]
-		debug.Logf("send seq=%d track=%v eps=%d frag=%v fragIdx=%d/%d order=%d rel=%v msgIdx=%d bodyLen=%d head=%02x",
+		debug.Logf("send seq=%d track=%v eps=%d frag=%v fragIdx=%d/%d order=%d rel=%v msgIdx=%d bodyLen=%d head=%02x dgramSize=%d",
 			seq, track, len(eps), ep.Fragmented, ep.FragIndex, ep.FragCount,
-			ep.OrderIndex, ep.Reliability, ep.MsgIndex, len(ep.Body), firstByte(ep.Body))
+			ep.OrderIndex, ep.Reliability, ep.MsgIndex, len(ep.Body), firstByte(ep.Body), len(out))
 	}
 	if !track {
 		return seq, nil
@@ -627,15 +706,28 @@ func (s *Session) RunBackground(ctx context.Context, idleTimeout time.Duration) 
 
 func (s *Session) flushAcks() {
 	seqs := s.ackCollector.Flush()
-	if len(seqs) == 0 {
-		return
+	if len(seqs) > 0 {
+		records := CompactAckRanges(seqs)
+		payload := EncodeAck(records)
+		out := make([]byte, 0, 1+len(payload))
+		out = append(out, FlagValid|FlagACK)
+		out = append(out, payload...)
+		_, _ = s.conn.WriteTo(out, s.remote)
 	}
-	records := CompactAckRanges(seqs)
-	payload := EncodeAck(records)
-	out := make([]byte, 0, 1+len(payload))
-	out = append(out, FlagValid|FlagACK)
-	out = append(out, payload...)
-	_, _ = s.conn.WriteTo(out, s.remote)
+	// NAK fast retransmit：把刚检测到的缺失 seq 通知对端立即重传。
+	// 不等 server 端 RTO（200ms），在跨境高 RTT 链路上能省下 ~150ms × N 次重传。
+	miss := s.recvWindow.ClaimMissing()
+	if len(miss) > 0 {
+		records := CompactAckRanges(miss)
+		payload := EncodeAck(records)
+		out := make([]byte, 0, 1+len(payload))
+		out = append(out, FlagValid|FlagNAK)
+		out = append(out, payload...)
+		_, _ = s.conn.WriteTo(out, s.remote)
+		if debug.Enabled() {
+			debug.Logf("send NAK missing=%d records=%v", len(miss), records)
+		}
+	}
 }
 
 func (s *Session) doResend() {
@@ -663,15 +755,8 @@ func (s *Session) doResend() {
 // 的重传永远到不了；新 seq 通常能避开这种确定性丢包。
 // 原 EP 的 MsgIndex/FragIndex/OrderIndex 保持不变，符合 RakNet 标准。
 func (s *Session) retransmit(item RetransmitItem) {
-	// 关键：在原 EPs 后附加一个随机 padding EP（Reliability=Unreliable，
-	// body 头是 IDDetectLostConnections — 对端 deliver 会 silent return）。
-	// 这让重传 datagram 的字节序列每次都不同，绕过 GFW/路径按 payload byte-pattern
-	// 的确定性丢包（这是用新 datagram seq 仍然无法解决的更深层问题）。
-	eps := make([]EncapsulatedPacket, 0, len(item.EPs)+1)
-	eps = append(eps, item.EPs...)
-	eps = append(eps, buildPaddingEP())
-
-	newSeq, err := s.sendDatagramTracked(eps, false)
+	// padding 由 sendDatagramTracked 统一处理（dynamic padding 到 minDatagramSize）。
+	newSeq, err := s.sendDatagramTracked(item.EPs, false)
 	if err != nil {
 		if debug.Enabled() {
 			debug.Logf("retransmit write err=%v", err)
@@ -680,10 +765,9 @@ func (s *Session) retransmit(item RetransmitItem) {
 	}
 	if debug.Enabled() {
 		for _, ep := range item.EPs {
-			debug.Logf("retransmit oldSeq=%d newSeq=%d frag=%v fragIdx=%d/%d order=%d rel=%v msgIdx=%d bodyLen=%d head=%02x padLen=%d",
+			debug.Logf("retransmit oldSeq=%d newSeq=%d frag=%v fragIdx=%d/%d order=%d rel=%v msgIdx=%d bodyLen=%d head=%02x",
 				item.OriginalSeq, newSeq, ep.Fragmented, ep.FragIndex, ep.FragCount,
-				ep.OrderIndex, ep.Reliability, ep.MsgIndex, len(ep.Body), firstByte(ep.Body),
-				len(eps[len(eps)-1].Body))
+				ep.OrderIndex, ep.Reliability, ep.MsgIndex, len(ep.Body), firstByte(ep.Body))
 		}
 	}
 	s.resend.Rekey(item.OriginalSeq, newSeq)
@@ -697,6 +781,14 @@ func (s *Session) retransmit(item RetransmitItem) {
 func buildPaddingEP() EncapsulatedPacket {
 	const minLen, maxLen = 8, 64
 	n := minLen + rand.Intn(maxLen-minLen+1)
+	return buildPaddingEPOfSize(n)
+}
+
+// buildPaddingEPOfSize 构造指定 body 长度的 padding EP（min 9，保留首字节 ID）。
+func buildPaddingEPOfSize(n int) EncapsulatedPacket {
+	if n < 9 {
+		n = 9
+	}
 	body := make([]byte, n)
 	body[0] = IDDetectLostConnections
 	_, _ = rand.Read(body[1:])
@@ -724,6 +816,12 @@ func Dial(ctx context.Context, target string) (*Session, error) {
 	pc, err := net.ListenPacket("udp", "0.0.0.0:0")
 	if err != nil {
 		return nil, err
+	}
+	// 设置 socket buffer 到 4MB —— 跨境高 RTT + burst 时默认 ~200KB 会让内核 silently drop
+	// datagram，表现为"某条 EP 反复重传到不了对端"。详见 listener/udp.go 同位置说明。
+	if udpConn, ok := pc.(*net.UDPConn); ok {
+		_ = udpConn.SetReadBuffer(4 * 1024 * 1024)
+		_ = udpConn.SetWriteBuffer(4 * 1024 * 1024)
 	}
 	clientGUID := rand.Int63()
 	if clientGUID == 0 {

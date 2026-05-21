@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/shuffleman/mcte/internal/debug"
 	"github.com/shuffleman/mcte/internal/netutil"
 	"github.com/shuffleman/mcte/pkg/detector"
 	"github.com/shuffleman/mcte/pkg/protocol/bedrock"
@@ -74,11 +75,16 @@ func (h *BedrockHandler) Handle(ctx context.Context, sess *raknet.Session, res *
 
 	errCh := make(chan error, 2)
 
+	var upBytes, downBytes int64
+
 	// 上行：client → upstream
 	go func() {
 		for {
 			body, err := sess.ReadApp(runCtx)
 			if err != nil {
+				if debug.Enabled() {
+					debug.Logf("[bedrock] uplink end: ReadApp err=%v (uploaded=%d)", err, upBytes)
+				}
 				errCh <- err
 				return
 			}
@@ -87,20 +93,30 @@ func (h *BedrockHandler) Handle(ctx context.Context, sess *raknet.Session, res *
 			}
 			decompressed, err := bedrock.DecompressBatch(body[1:])
 			if err != nil {
+				if debug.Enabled() {
+					debug.Logf("[bedrock] uplink end: DecompressBatch err=%v", err)
+				}
 				errCh <- err
 				return
 			}
 			pkts, err := bedrock.SplitBatchPackets(decompressed)
 			if err != nil {
+				if debug.Enabled() {
+					debug.Logf("[bedrock] uplink end: SplitBatchPackets err=%v", err)
+				}
 				errCh <- err
 				return
 			}
 			for _, p := range pkts {
 				if data, ok := extractTunnelPayload(p); ok {
 					if _, werr := upstream.Write(data); werr != nil {
+						if debug.Enabled() {
+							debug.Logf("[bedrock] uplink end: upstream.Write err=%v", werr)
+						}
 						errCh <- werr
 						return
 					}
+					upBytes += int64(len(data))
 				}
 				// 非 TunnelData 的 packet 全部静默丢弃
 			}
@@ -113,19 +129,29 @@ func (h *BedrockHandler) Handle(ctx context.Context, sess *raknet.Session, res *
 		for {
 			n, err := upstream.Read(buf)
 			if n > 0 {
+				downBytes += int64(n)
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
 				gp, gerr := bedrock.AssembleSingle(bedrock.CompZlib, bedrock.PacketTunnelData, chunk)
 				if gerr != nil {
+					if debug.Enabled() {
+						debug.Logf("[bedrock] downlink end: AssembleSingle err=%v (downloaded=%d)", gerr, downBytes)
+					}
 					errCh <- gerr
 					return
 				}
 				if werr := sess.WriteAppCtx(runCtx, gp); werr != nil {
+					if debug.Enabled() {
+						debug.Logf("[bedrock] downlink end: WriteAppCtx err=%v (downloaded=%d)", werr, downBytes)
+					}
 					errCh <- werr
 					return
 				}
 			}
 			if err != nil {
+				if debug.Enabled() {
+					debug.Logf("[bedrock] downlink end: upstream.Read err=%v (downloaded=%d)", err, downBytes)
+				}
 				errCh <- err
 				return
 			}
@@ -134,12 +160,21 @@ func (h *BedrockHandler) Handle(ctx context.Context, sess *raknet.Session, res *
 
 	select {
 	case e := <-errCh:
+		if debug.Enabled() {
+			debug.Logf("[bedrock] session close from errCh err=%v (up=%d down=%d)", e, upBytes, downBytes)
+		}
 		_ = sess.Close()
 		return e
 	case <-runCtx.Done():
+		if debug.Enabled() {
+			debug.Logf("[bedrock] session close from runCtx (up=%d down=%d)", upBytes, downBytes)
+		}
 		_ = sess.Close()
 		return runCtx.Err()
 	case <-sess.Closed():
+		if debug.Enabled() {
+			debug.Logf("[bedrock] session close from sess.Closed() (up=%d down=%d)", upBytes, downBytes)
+		}
 		return nil
 	}
 }

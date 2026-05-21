@@ -22,8 +22,8 @@ func TestResendQueueWaitForRoom(t *testing.T) {
 // 填满 cwnd 后 WaitForRoom 必须阻塞直到 AckRange 释放。
 func TestResendQueueBlockUntilAck(t *testing.T) {
 	q := raknet.NewResendQueue(200*time.Millisecond, 8)
-	// 填满
-	for i := 0; i < 32; i++ {
+	// 填满初始 cwnd(=8)；AckRange 释放 1 个后 WaitForRoom 应当解除。
+	for i := 0; i < 8; i++ {
 		q.Add(uint32(i), []raknet.EncapsulatedPacket{{Reliability: raknet.RelReliable, Body: []byte{0x01}}})
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
