@@ -46,17 +46,17 @@ func NewResendQueue(rto time.Duration, maxTry int) *ResendQueue {
 		// 中 33 次因单 EP 重传用尽 close session。提高到 60 (12s) 给单 EP 99.99% 成功率。
 		maxTry = 60
 	}
-	// 拥塞窗口上限调低（之前 2048 太激进 → 跨网络场景 burst 触发上游 rate limit，
-	// 短时间内整段数据被链路黑洞丢弃，client 收不到任何包）。
-	// 64 datagrams × 1027 bytes / 90ms RTT ≈ 700 KB/s 已能满足大多数应用层需求。
+	// 拥塞窗口：maxCwnd=128 是实测 sweet spot。
+	// 跨境 RTT~90ms 链路实测：maxCwnd=64 -> 3.2s/req, =128 -> 2.0s/req, =256 -> 3.1s/req。
+	// 256 反而慢说明大 burst 触发上游延迟（非丢包）。128 是兼顾速率与稳定的最优值。
 	return &ResendQueue{
 		entries:  make(map[uint32]*resendEntry),
 		rto:      rto,
 		maxTry:   maxTry,
-		cwnd:     8,
-		ssthresh: 32,
+		cwnd:     16,
+		ssthresh: 64,
 		minCwnd:  4,
-		maxCwnd:  64,
+		maxCwnd:  128,
 		roomCh:   make(chan struct{}),
 	}
 }
