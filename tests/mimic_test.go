@@ -1,68 +1,62 @@
 package tests
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/shuffleman/mcte/pkg/client"
 )
 
-// 不同 size 输入 → 期望对应 channel。
-func TestMimicChannelByMessageSize(t *testing.T) {
-	p := client.DefaultProfile()
-	cases := []struct {
-		size     int
-		wantChan string
-	}{
-		{1, p.Channel(client.ActionMove)},
-		{32, p.Channel(client.ActionMove)},
-		{33, p.Channel(client.ActionFly)},
-		{256, p.Channel(client.ActionFly)},
-		{257, p.Channel(client.ActionChunk)},
-		{4000, p.Channel(client.ActionChunk)},
+// stripFrame 复刻服务端 tunnel.stripFramePrefix：[1B prefixLen][prefixLen][data]。
+func stripFrame(d []byte) []byte {
+	if len(d) == 0 {
+		return nil
 	}
-	for _, tc := range cases {
-		data := make([]byte, tc.size)
+	l := int(d[0])
+	if 1+l > len(d) {
+		return nil
+	}
+	return d[1+l:]
+}
+
+// 新设计：所有 C→S 数据帧都走 move channel（funnel，抬高 top1 占比，匹配 MC）。
+func TestMimicAllFramesMoveChannel(t *testing.T) {
+	p := client.DefaultProfile()
+	moveCh := p.Channel(client.ActionMove)
+	for _, size := range []int{1, 32, 256, 4000} {
+		data := make([]byte, size)
 		chunks := p.Pack(data)
 		if len(chunks) == 0 {
-			t.Fatalf("size=%d produced no chunks", tc.size)
+			t.Fatalf("size=%d produced no chunks", size)
 		}
-		if chunks[0].Channel != tc.wantChan {
-			t.Fatalf("size=%d first channel=%q want %q", tc.size, chunks[0].Channel, tc.wantChan)
+		for i, ch := range chunks {
+			if ch.Channel != moveCh {
+				t.Fatalf("size=%d chunk %d channel=%q want move %q", size, i, ch.Channel, moveCh)
+			}
 		}
 	}
 }
 
-// 大包按 ChunkSize 切片，所有切片都是 ChunkSuffix channel。
-func TestMimicChunkSplit(t *testing.T) {
-	p := &client.MimicProfile{
-		ChannelPrefix: "mcte:",
-		MoveSuffix:    "m",
-		FlySuffix:     "f",
-		ChunkSuffix:   "c",
-		IdleSuffix:    "i",
-		MoveThreshold: 32,
-		FlyThreshold:  256,
-		ChunkSize:     1000,
-	}
+// 新设计：C→S 拆成小帧，每帧数据切片 ≤ C2SMaxFrame（默认 64），匹配 MC "C→S 95%+ < 100B"。
+func TestMimicSmallFrames(t *testing.T) {
+	p := client.DefaultProfile()
 	data := make([]byte, 3500)
 	chunks := p.Pack(data)
-	if len(chunks) != 4 {
-		t.Fatalf("3500/1000 expect 4 chunks, got %d", len(chunks))
+	if len(chunks) < 3500/p.C2SMaxFrame {
+		t.Fatalf("3500 bytes only produced %d small frames", len(chunks))
 	}
 	for i, ch := range chunks {
-		if ch.Action != client.ActionChunk {
-			t.Fatalf("chunk %d action=%v want ActionChunk", i, ch.Action)
+		body := stripFrame(ch.Payload)
+		if body == nil {
+			t.Fatalf("chunk %d strip failed", i)
 		}
-		if ch.Channel != "mcte:c" {
-			t.Fatalf("chunk %d channel=%q", i, ch.Channel)
+		if len(body) > p.C2SMaxFrame {
+			t.Fatalf("chunk %d body %d > C2SMaxFrame %d", i, len(body), p.C2SMaxFrame)
 		}
-	}
-	if chunks[0].Payload[0] != 0 || len(chunks[3].Payload) != 500 {
-		t.Fatalf("last chunk size = %d want 500", len(chunks[3].Payload))
 	}
 }
 
-// Pack 必须保持字节顺序和完整性：拼回应等于原 data。
+// Pack 剥离帧头后必须无损拼回原始字节流。
 func TestMimicRoundtrip(t *testing.T) {
 	p := client.DefaultProfile()
 	data := make([]byte, 5000)
@@ -70,29 +64,24 @@ func TestMimicRoundtrip(t *testing.T) {
 		data[i] = byte(i % 251)
 	}
 	chunks := p.Pack(data)
-	out := make([]byte, 0, len(data))
+	var out bytes.Buffer
 	for _, ch := range chunks {
-		out = append(out, ch.Payload...)
+		out.Write(stripFrame(ch.Payload))
 	}
-	if len(out) != len(data) {
-		t.Fatalf("roundtrip len mismatch: %d vs %d", len(out), len(data))
-	}
-	for i := range data {
-		if out[i] != data[i] {
-			t.Fatalf("byte %d mismatch", i)
-		}
+	if !bytes.Equal(out.Bytes(), data) {
+		t.Fatalf("roundtrip mismatch: %d vs %d", out.Len(), len(data))
 	}
 }
 
-// Heartbeat 空包，channel 是 idle channel。
+// 新设计：Heartbeat 是低熵移动包（非空），channel 为 idle channel（服务端丢弃）。
 func TestMimicHeartbeat(t *testing.T) {
 	p := client.DefaultProfile()
 	hb := p.Heartbeat()
 	if hb.Action != client.ActionIdle {
 		t.Fatalf("hb action = %v", hb.Action)
 	}
-	if len(hb.Payload) != 0 {
-		t.Fatalf("hb payload should be empty")
+	if len(hb.Payload) == 0 {
+		t.Fatalf("hb payload should be a non-empty move packet")
 	}
 	if !p.IsIdleChannel(hb.Channel) {
 		t.Fatalf("hb channel %q not recognized as idle", hb.Channel)
@@ -114,7 +103,7 @@ func TestMimicTunnelChannelMatch(t *testing.T) {
 	}
 }
 
-// 空数据 Pack 返回 nil（不能产生任何包，让 idle 心跳负责）。
+// 空数据 Pack 返回 nil（由 idle 移动流负责保活）。
 func TestMimicPackEmpty(t *testing.T) {
 	p := client.DefaultProfile()
 	if chunks := p.Pack(nil); chunks != nil {

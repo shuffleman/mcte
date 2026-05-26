@@ -69,16 +69,21 @@ func (c *javaBridgeConn) startHeartbeat() {
 	})
 }
 
+// heartbeatLoop 在 C→S 真实数据空闲时，按 MoveTickInterval（默认 50ms / 20Hz）
+// 持续补发低熵"移动包"到 idle channel（服务端丢弃），复现真实 MC 客户端连续密集
+// 小包流，修复 c2s_small_pkt_frac / burst_count / iat_* 指纹。
 func (c *javaBridgeConn) heartbeatLoop() {
-	if c.mimic == nil || c.mimic.HeartbeatInterval <= 0 {
+	if c.mimic == nil {
 		return
 	}
-	interval := c.mimic.HeartbeatInterval
-	checkEvery := interval / 2
-	if checkEvery < 100*time.Millisecond {
-		checkEvery = 100 * time.Millisecond
+	interval := c.mimic.MoveTickInterval
+	if interval <= 0 {
+		interval = c.mimic.HeartbeatInterval
 	}
-	t := time.NewTicker(checkEvery)
+	if interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
@@ -87,6 +92,7 @@ func (c *javaBridgeConn) heartbeatLoop() {
 		case now := <-t.C:
 			last := time.Unix(0, c.lastWrite.Load())
 			if now.Sub(last) < interval {
+				// 刚发过真实数据，本 tick 无需补移动包
 				continue
 			}
 			hb := c.mimic.Heartbeat()
@@ -195,19 +201,19 @@ func (c *javaBridgeConn) writeSingleChannel(p []byte) (int, error) {
 	return written, nil
 }
 
-// writeMimic 流量画像模式：按 size 选 channel + 多 chunk。
+// writeMimic 流量画像模式：把上行数据拆成小帧（move channel）逐帧发出。
+// chunk.Payload 已是 wire 字节（含帧头 + 可选熵前缀），故返回值用消耗的真实
+// 用户字节数 len(p) 而非 wire 字节数，满足 io.Writer / net.Conn 语义。
 func (c *javaBridgeConn) writeMimic(p []byte) (int, error) {
 	chunks := c.mimic.Pack(p)
-	written := 0
 	for _, ch := range chunks {
 		pm := &java.PluginMessage{Channel: ch.Channel, Data: ch.Payload}
 		if err := c.fr.WritePacket(java.Packet{ID: c.sbID, Payload: java.EncodePluginMessage(pm)}); err != nil {
-			return written, err
+			return 0, err
 		}
-		written += len(ch.Payload)
 	}
 	c.lastWrite.Store(time.Now().UnixNano())
-	return written, nil
+	return len(p), nil
 }
 
 func (c *javaBridgeConn) Close() error {

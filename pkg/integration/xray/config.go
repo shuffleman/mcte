@@ -28,6 +28,8 @@ type MCTEConfig struct {
 	FallbackUDP    []string     `json:"fallbackUdp,omitempty"` // Bedrock 透传后端
 	ListenTCP      string       `json:"listenTcp,omitempty"`
 	ListenUDP      string       `json:"listenUdp,omitempty"`
+	// Mimic 启用 Java TCP 抗 DPI 流量整形识别（与客户端 outbound Mimic 配套）。
+	Mimic bool `json:"mimic,omitempty"`
 }
 
 // MCTEClientConfig outbound 配置（指向远端 MCTE inbound）。
@@ -40,6 +42,11 @@ type MCTEClientConfig struct {
 	// Bedrock 用：clientData JWT claim 字段名（应与 inbound 一致）
 	UUIDField   string `json:"uuidField,omitempty"`
 	TargetField string `json:"targetField,omitempty"`
+
+	// Mimic 启用 Java TCP 抗 DPI 流量整形（C→S 小帧 + tick-rate 移动流）。
+	Mimic bool `json:"mimic,omitempty"`
+	// EntropyPrefix > 0 时启用载荷熵前缀（每帧前置该字节数上限的低熵填充）。仅 Mimic 时生效。
+	EntropyPrefix int `json:"entropyPrefix,omitempty"`
 }
 
 // TransportName Xray 中的注册名。

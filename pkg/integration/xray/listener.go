@@ -46,6 +46,9 @@ func NewListener(cfg MCTEConfig, log *zap.Logger, handle func(net.Conn)) (*Liste
 	if cfg.MaxSessions > 0 {
 		c.Session.MaxConcurrent = cfg.MaxSessions
 	}
+	if cfg.Mimic {
+		c.Tunnel.Mimic.Enabled = true
+	}
 	for _, u := range cfg.Users {
 		c.Users = append(c.Users, config.UserConfig{Name: u.Name, UUID: u.UUID, Level: u.Level})
 	}

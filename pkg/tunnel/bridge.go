@@ -31,6 +31,11 @@ type MimicMatcher struct {
 	MoveMax     int // 包大小 ≤ MoveMax → 进 MoveSuffix channel
 	FlyMax      int // 包大小 ≤ FlyMax → FlySuffix
 	ChunkSplit  int // 大于 FlyMax 时按 ChunkSplit 切片，进 ChunkSuffix
+
+	// FramePrefix：客户端 C→S 小帧是否携带自描述帧头 [1B prefixLen][prefixLen 字节]。
+	// 与 client.MimicProfile 的小帧编码配套；为 true 时服务端剥离帧头再转发上游。
+	// 新客户端恒为 true（即使 prefixLen=0 也带 1 字节头）。
+	FramePrefix bool
 }
 
 // DefaultMimicMatcher 与 client.DefaultProfile 一致的默认值。
@@ -44,7 +49,21 @@ func DefaultMimicMatcher() *MimicMatcher {
 		MoveMax:     32,
 		FlyMax:      256,
 		ChunkSplit:  2048,
+		FramePrefix: true,
 	}
+}
+
+// stripFramePrefix 剥离 C→S 小帧自描述帧头 [1B prefixLen][prefixLen 字节]，返回真实数据。
+// 格式异常（头声明长度超出 buffer）时返回 nil，调用方应丢弃该帧。
+func stripFramePrefix(d []byte) []byte {
+	if len(d) == 0 {
+		return nil
+	}
+	l := int(d[0])
+	if 1+l > len(d) {
+		return nil
+	}
+	return d[1+l:]
 }
 
 // Bridge 在客户端 Play 阶段 PluginMessage 与上游 net.Conn 之间双向桥接。
@@ -102,10 +121,15 @@ func (b *Bridge) Run(ctx context.Context) error {
 				if b.isIdleChannel(pm.Channel) {
 					continue
 				}
-				if len(pm.Data) == 0 {
+				data := pm.Data
+				// C→S 小帧剥离自描述帧头（[1B prefixLen][prefixLen 低熵字节]）拼回原始流。
+				if b.matcher != nil && b.matcher.FramePrefix {
+					data = stripFramePrefix(data)
+				}
+				if len(data) == 0 {
 					continue
 				}
-				if _, err := b.upstream.Write(pm.Data); err != nil {
+				if _, err := b.upstream.Write(data); err != nil {
 					errCh <- err
 					return
 				}

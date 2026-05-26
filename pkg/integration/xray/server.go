@@ -58,7 +58,7 @@ func NewClient(cfg MCTEClientConfig, log *zap.Logger) (*Client, error) {
 	if network == "" {
 		network = "tcp"
 	}
-	sdk, err := client.New(client.Config{
+	clientCfg := client.Config{
 		Server:      cfg.Server,
 		Port:        cfg.ServerPort,
 		UUID:        cfg.UUID,
@@ -66,7 +66,16 @@ func NewClient(cfg MCTEClientConfig, log *zap.Logger) (*Client, error) {
 		Channel:     cfg.Channel,
 		UUIDField:   cfg.UUIDField,
 		TargetField: cfg.TargetField,
-	})
+	}
+	if cfg.Mimic {
+		prof := client.DefaultProfile()
+		if cfg.EntropyPrefix > 0 {
+			prof.EntropyPrefixMax = cfg.EntropyPrefix
+			prof.EntropyPrefixMin = cfg.EntropyPrefix / 2
+		}
+		clientCfg.Mimic = prof
+	}
+	sdk, err := client.New(clientCfg)
 	if err != nil {
 		return nil, err
 	}

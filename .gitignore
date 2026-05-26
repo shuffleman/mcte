@@ -25,3 +25,10 @@ Thumbs.db
 /logs/
 /local-test/*.log
 /local-test/echo_https*
+
+# Local test build artifacts & scratch
+/local-test/*-linux-amd64
+/local-test/*.err
+/local-test/*.exe~
+/local-test/r.bin
+/local-test/*-nomimic.json

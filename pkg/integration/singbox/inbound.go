@@ -52,6 +52,9 @@ func New(opts Options, log *zap.Logger, route RouteHandler) (*Inbound, error) {
 	if opts.MaxSessions > 0 {
 		c.Session.MaxConcurrent = opts.MaxSessions
 	}
+	if opts.Mimic {
+		c.Tunnel.Mimic.Enabled = true
+	}
 	for _, u := range opts.Users {
 		c.Users = append(c.Users, config.UserConfig{Name: u.Name, UUID: u.UUID, Level: u.Level})
 	}
@@ -83,8 +86,13 @@ type singUpstream struct {
 
 func (s singUpstream) DialUpstream(ctx context.Context, host string, port uint16) (net.Conn, error) {
 	a, b := net.Pipe()
+	// 关键：RouteConnection 是长生命周期的转发循环，其生命由 pipe 两端 Close 控制，
+	// 不能绑定到调用方的「拨号 ctx」。handler 在拨号返回后会立即 upCancel() 取消该
+	// ctx（10s 拨号超时），若 RouteConnection 用同一 ctx 会被立刻取消，导致
+	// "operation was canceled"。用 WithoutCancel 脱离取消信号（保留 values）。
+	routeCtx := context.WithoutCancel(ctx)
 	go func() {
-		_ = s.route.RouteConnection(ctx, b, host, port)
+		_ = s.route.RouteConnection(routeCtx, b, host, port)
 	}()
 	return a, nil
 }

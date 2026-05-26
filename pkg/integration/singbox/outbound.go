@@ -17,6 +17,11 @@ type ClientOptions struct {
 	Channel     string `json:"channel,omitempty"`
 	UUIDField   string `json:"uuid_field,omitempty"`
 	TargetField string `json:"target_field,omitempty"`
+
+	// Mimic 启用 Java TCP 抗 DPI 流量整形（C→S 小帧 + tick-rate 移动流）。
+	Mimic bool `json:"mimic,omitempty"`
+	// EntropyPrefix > 0 时启用载荷熵前缀（每帧前置该字节数上限的低熵填充）。仅 Mimic 时生效。
+	EntropyPrefix int `json:"entropy_prefix,omitempty"`
 }
 
 type Client struct {
@@ -32,6 +37,14 @@ func NewClient(opts ClientOptions, logger *zap.Logger) (*Client, error) {
 		Channel:     opts.Channel,
 		UUIDField:   opts.UUIDField,
 		TargetField: opts.TargetField,
+	}
+	if opts.Mimic {
+		prof := client.DefaultProfile()
+		if opts.EntropyPrefix > 0 {
+			prof.EntropyPrefixMax = opts.EntropyPrefix
+			prof.EntropyPrefixMin = opts.EntropyPrefix / 2
+		}
+		cfg.Mimic = prof
 	}
 	c, err := client.New(cfg)
 	if err != nil {

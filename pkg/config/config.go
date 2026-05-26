@@ -39,7 +39,11 @@ type TunnelConfig struct {
 	Mimic MimicConfig `yaml:"mimic"`
 }
 
-// MimicConfig 流量画像。
+// MimicConfig 流量画像（服务端 inbound 侧识别 + 下行切片）。
+//
+// 注意：C→S 抗 DPI 小帧整形（帧大小、移动流 tick、熵前缀）是**客户端 outbound** 行为，
+// 由 integration 层 (singbox/xray) 的 Mimic / EntropyPrefix 选项控制；服务端只需用
+// 同一 Prefix/IdleSuffix 识别并剥离自描述帧头（FramePrefix 恒开）。
 type MimicConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	Prefix      string `yaml:"prefix"`       // 默认 "mcte:"

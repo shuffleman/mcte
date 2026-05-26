@@ -402,6 +402,9 @@ func buildMimicMatcher(c config.MimicConfig) *tunnel.MimicMatcher {
 	if m.ChunkSplit <= 0 {
 		m.ChunkSplit = 2048
 	}
+	// 新客户端 C→S 小帧恒带自描述帧头（[1B prefixLen][...]），服务端必须剥离。
+	// 与 client.MimicProfile.Pack 配套；非可选项（prefixLen=0 时也带 1 字节头）。
+	m.FramePrefix = true
 	return m
 }
 
