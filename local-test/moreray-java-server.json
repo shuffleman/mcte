@@ -7,6 +7,8 @@
       "settings": {
         "listenTcp": "127.0.0.1:25565",
         "javaEnabled": true,
+        "mimic": true,
+        "s2cRate": 131072,
         "channel": "mcte:data",
         "uuidField": "MCTEUuid",
         "targetField": "MCTETarget",
