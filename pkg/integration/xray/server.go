@@ -73,6 +73,9 @@ func NewClient(cfg MCTEClientConfig, log *zap.Logger) (*Client, error) {
 			prof.EntropyPrefixMax = cfg.EntropyPrefix
 			prof.EntropyPrefixMin = cfg.EntropyPrefix / 2
 		}
+		if cfg.C2SRate > 0 {
+			prof.C2SRateBytesPerSec = cfg.C2SRate
+		}
 		clientCfg.Mimic = prof
 	}
 	sdk, err := client.New(clientCfg)

@@ -100,11 +100,12 @@ func New(cfg *config.Config, log *zap.Logger, upstream UpstreamDialer) (*Engine,
 		tunMimic = buildMimicMatcher(cfg.Tunnel.Mimic)
 	}
 	tunH := tunnel.NewHandler(tunnel.HandlerConfig{
-		DataChannel:      cfg.Tunnel.Channel,
-		WriteTimeout:     cfg.Tunnel.WriteTimeout,
-		KeepAliveEvery:   cfg.Tunnel.KeepAliveEvery,
-		KeepAliveTimeout: cfg.Tunnel.KeepAliveTimeout,
-		Mimic:            tunMimic,
+		DataChannel:        cfg.Tunnel.Channel,
+		WriteTimeout:       cfg.Tunnel.WriteTimeout,
+		KeepAliveEvery:     cfg.Tunnel.KeepAliveEvery,
+		KeepAliveTimeout:   cfg.Tunnel.KeepAliveTimeout,
+		Mimic:              tunMimic,
+		S2CRateBytesPerSec: cfg.Tunnel.S2CRateBytesPerSec,
 	}, func(ctx context.Context, host string, port uint16) (net.Conn, error) {
 		return upstream.DialUpstream(ctx, host, port)
 	})

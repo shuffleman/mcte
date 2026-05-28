@@ -30,6 +30,8 @@ type MCTEConfig struct {
 	ListenUDP      string       `json:"listenUdp,omitempty"`
 	// Mimic 启用 Java TCP 抗 DPI 流量整形识别（与客户端 outbound Mimic 配套）。
 	Mimic bool `json:"mimic,omitempty"`
+	// S2CRate > 0 时限制下行发送速率（字节/秒），压制 seq_delta_rate。
+	S2CRate int `json:"s2cRate,omitempty"`
 }
 
 // MCTEClientConfig outbound 配置（指向远端 MCTE inbound）。
@@ -47,6 +49,8 @@ type MCTEClientConfig struct {
 	Mimic bool `json:"mimic,omitempty"`
 	// EntropyPrefix > 0 时启用载荷熵前缀（每帧前置该字节数上限的低熵填充）。仅 Mimic 时生效。
 	EntropyPrefix int `json:"entropyPrefix,omitempty"`
+	// C2SRate > 0 时限制 C→S 发送速率（字节/秒）并 pacing。仅 Mimic 时生效。
+	C2SRate int `json:"c2sRate,omitempty"`
 }
 
 // TransportName Xray 中的注册名。

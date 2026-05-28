@@ -30,6 +30,10 @@ type HandlerConfig struct {
 	// 非 nil 时使用前缀匹配识别多个 channel（mcte:m/mcte:f/mcte:c/mcte:i），
 	// nil 时使用 DataChannel 单 channel（兼容模式）。
 	Mimic *MimicMatcher
+
+	// S2CRateBytesPerSec：下行（server→client）发送速率上限（字节/秒，0 = 不限速）。
+	// 抗 DPI：压制 seq_delta_rate（吞吐速率）。代价是限下载速度。
+	S2CRateBytesPerSec int
 }
 
 // Handler 隧道入口。
@@ -163,6 +167,7 @@ func (h *Handler) Handle(ctx context.Context, client net.Conn, det *detector.Det
 	} else {
 		br = NewBridge(fr, proto, h.cfg.DataChannel, watchdog, upstream, ka)
 	}
+	br.SetS2CRate(h.cfg.S2CRateBytesPerSec)
 	err = br.Run(runCtx)
 	// bridge.closeBoth 已经关了 client 与 upstream；这里 close 是幂等保险
 	_ = client.Close()

@@ -37,6 +37,10 @@ type TunnelConfig struct {
 	// Mimic 流量画像（按数据大小选 channel 模拟玩家不同动作）。
 	// Enabled=false 时使用单 Channel（兼容旧模式）。
 	Mimic MimicConfig `yaml:"mimic"`
+
+	// S2CRateBytesPerSec：服务端 → 客户端（下行）发送速率上限（字节/秒，0 = 不限速）。
+	// 抗 DPI：压制监督模型头号特征 seq_delta_rate（吞吐速率）。代价是限下载速度。
+	S2CRateBytesPerSec int `yaml:"s2c_rate_bytes_per_sec"`
 }
 
 // MimicConfig 流量画像（服务端 inbound 侧识别 + 下行切片）。

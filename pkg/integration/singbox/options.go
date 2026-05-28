@@ -36,6 +36,8 @@ type Options struct {
 	// Mimic 启用 Java TCP 抗 DPI 流量整形识别（接受客户端 mimic 多 channel 小帧 +
 	// 剥离自描述帧头 + 下行按 MC 大小切片）。需与客户端 outbound Mimic 配套。
 	Mimic bool `json:"mimic,omitempty"`
+	// S2CRate > 0 时限制下行（server→client）发送速率（字节/秒），压制 seq_delta_rate。
+	S2CRate int `json:"s2c_rate,omitempty"`
 }
 
 // OutboundOptions outbound 配置。

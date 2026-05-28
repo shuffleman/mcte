@@ -92,6 +92,12 @@ type MimicProfile struct {
 	// MoveSizeMin/Max：idle 移动包字节范围。默认 28..44（模拟 MovePlayerPos/PosRot）。
 	MoveSizeMin int
 	MoveSizeMax int
+
+	// C2SRateBytesPerSec：C→S 发送速率上限（字节/秒，0 = 不限速）。
+	// 关键：开启后逐帧 pacing 让小帧之间有时间间隔，NODELAY 的 TCP 才会把它们
+	// 当独立小包发出（否则连续 flush 会被内核 coalesce 成 MSS 大 segment，小帧白做）。
+	// 代价是限 C→S 上行速率；上行通常是 HTTP 请求（小），影响可控。
+	C2SRateBytesPerSec int
 }
 
 // DefaultProfile 推荐配置（平衡档：小帧 + 移动流，熵前缀默认关闭）。

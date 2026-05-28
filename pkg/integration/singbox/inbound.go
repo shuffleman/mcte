@@ -55,6 +55,9 @@ func New(opts Options, log *zap.Logger, route RouteHandler) (*Inbound, error) {
 	if opts.Mimic {
 		c.Tunnel.Mimic.Enabled = true
 	}
+	if opts.S2CRate > 0 {
+		c.Tunnel.S2CRateBytesPerSec = opts.S2CRate
+	}
 	for _, u := range opts.Users {
 		c.Users = append(c.Users, config.UserConfig{Name: u.Name, UUID: u.UUID, Level: u.Level})
 	}

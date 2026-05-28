@@ -7,6 +7,7 @@
       "listen_tcp": "127.0.0.1:25565",
       "java_enabled": true,
       "mimic": true,
+      "s2c_rate": 131072,
       "channel": "mcte:data",
       "uuid_field": "MCTEUuid",
       "target_field": "MCTETarget",

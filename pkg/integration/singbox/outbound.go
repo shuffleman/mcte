@@ -22,6 +22,8 @@ type ClientOptions struct {
 	Mimic bool `json:"mimic,omitempty"`
 	// EntropyPrefix > 0 时启用载荷熵前缀（每帧前置该字节数上限的低熵填充）。仅 Mimic 时生效。
 	EntropyPrefix int `json:"entropy_prefix,omitempty"`
+	// C2SRate > 0 时限制 C→S 发送速率（字节/秒）并逐帧 pacing 让小帧真上 wire。仅 Mimic 时生效。
+	C2SRate int `json:"c2s_rate,omitempty"`
 }
 
 type Client struct {
@@ -43,6 +45,9 @@ func NewClient(opts ClientOptions, logger *zap.Logger) (*Client, error) {
 		if opts.EntropyPrefix > 0 {
 			prof.EntropyPrefixMax = opts.EntropyPrefix
 			prof.EntropyPrefixMin = opts.EntropyPrefix / 2
+		}
+		if opts.C2SRate > 0 {
+			prof.C2SRateBytesPerSec = opts.C2SRate
 		}
 		cfg.Mimic = prof
 	}

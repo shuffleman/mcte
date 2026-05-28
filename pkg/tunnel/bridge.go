@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/shuffleman/mcte/internal/netutil"
 	"github.com/shuffleman/mcte/pkg/protocol/java"
 )
 
@@ -75,6 +76,16 @@ type Bridge struct {
 	client    net.Conn
 	upstream  net.Conn
 	keepalive *KeepAliveDriver
+	// s2cBucket 下行限速（nil 或 rate<=0 = 不限速）。压制 seq_delta_rate。
+	s2cBucket *netutil.TokenBucket
+}
+
+// SetS2CRate 设置下行（server→client）发送速率上限（字节/秒，<=0 = 不限速）。
+func (b *Bridge) SetS2CRate(rate int) {
+	if rate > 0 {
+		// burst 给 16KB，允许 MC chunk 式突发，但总速率受限。
+		b.s2cBucket = netutil.NewTokenBucket(rate, 16*1024)
+	}
 }
 
 // NewBridge 构造兼容模式 bridge（单 channel）。
@@ -195,6 +206,9 @@ func (b *Bridge) isIdleChannel(ch string) bool {
 // matcher 非 nil 时按大小切片到 move/fly/chunk channel；否则用单 channel + 32767 分帧。
 func (b *Bridge) writeDownstream(cbID int32, data []byte) error {
 	if b.matcher == nil {
+		if b.s2cBucket.Enabled() {
+			b.s2cBucket.Take(len(data) + 12)
+		}
 		pm := &java.PluginMessage{Channel: b.channel, Data: data}
 		return b.fr.WritePacket(java.Packet{ID: cbID, Payload: java.EncodePluginMessage(pm)})
 	}
@@ -217,6 +231,9 @@ func (b *Bridge) writeDownstream(cbID int32, data []byte) error {
 				take = len(data)
 			}
 			channel = m.Prefix + m.ChunkSuffix
+		}
+		if b.s2cBucket.Enabled() {
+			b.s2cBucket.Take(take + 12)
 		}
 		pm := &java.PluginMessage{Channel: channel, Data: data[:take]}
 		if err := b.fr.WritePacket(java.Packet{ID: cbID, Payload: java.EncodePluginMessage(pm)}); err != nil {

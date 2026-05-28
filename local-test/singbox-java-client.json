@@ -20,7 +20,8 @@
       "uuid_field": "MCTEUuid",
       "target_field": "MCTETarget",
       "mimic": true,
-      "entropy_prefix": 12
+      "entropy_prefix": 12,
+      "c2s_rate": 32768
     },
     {"type": "direct", "tag": "direct"},
     {"type": "block", "tag": "block"}

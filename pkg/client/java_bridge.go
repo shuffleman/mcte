@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shuffleman/mcte/internal/netutil"
 	"github.com/shuffleman/mcte/pkg/protocol/java"
 )
 
@@ -41,6 +42,11 @@ type javaBridgeConn struct {
 	stopHB    chan struct{}
 	hbOnce    sync.Once
 
+	// c2sBucket C→S 发送限速 + pacing（nil 或 rate<=0 = 不限速）。
+	c2sBucket *netutil.TokenBucket
+	// writeMu 串行化所有 C→S 帧写出（writeMimic 与 heartbeat 移动流并发时不交错 pacing）。
+	writeMu sync.Mutex
+
 	closed sync.Once
 }
 
@@ -59,6 +65,10 @@ func newJavaBridgeConn(fr *java.Framer, raw net.Conn, channel string, proto int3
 	}
 	c.kaSBID = c.playSBKA
 	c.lastWrite.Store(time.Now().UnixNano())
+	if mimic != nil && mimic.C2SRateBytesPerSec > 0 {
+		// burst 取一个小帧 wire 上限，让每帧基本独立 pacing（小包真上 wire）。
+		c.c2sBucket = netutil.NewTokenBucket(mimic.C2SRateBytesPerSec, 256)
+	}
 	return c
 }
 
@@ -96,8 +106,7 @@ func (c *javaBridgeConn) heartbeatLoop() {
 				continue
 			}
 			hb := c.mimic.Heartbeat()
-			pm := &java.PluginMessage{Channel: hb.Channel, Data: hb.Payload}
-			if err := c.fr.WritePacket(java.Packet{ID: c.sbID, Payload: java.EncodePluginMessage(pm)}); err != nil {
+			if err := c.writeFramePaced(hb.Channel, hb.Payload); err != nil {
 				return
 			}
 			c.lastWrite.Store(now.UnixNano())
@@ -201,14 +210,26 @@ func (c *javaBridgeConn) writeSingleChannel(p []byte) (int, error) {
 	return written, nil
 }
 
-// writeMimic 流量画像模式：把上行数据拆成小帧（move channel）逐帧发出。
+// writeFramePaced 串行 + 限速地写出一个 mimic PluginMessage 帧。
+// 限速开启时逐帧 Take 令牌，帧间留时间，使小帧在 NODELAY 的 TCP 上独立成小包。
+func (c *javaBridgeConn) writeFramePaced(channel string, payload []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.c2sBucket.Enabled() {
+		// +12 近似 PluginMessage wire 开销（VarInt 长度 + packetID + channel 名）
+		c.c2sBucket.Take(len(payload) + 12)
+	}
+	pm := &java.PluginMessage{Channel: channel, Data: payload}
+	return c.fr.WritePacket(java.Packet{ID: c.sbID, Payload: java.EncodePluginMessage(pm)})
+}
+
+// writeMimic 流量画像模式：把上行数据拆成小帧（move channel）逐帧 paced 发出。
 // chunk.Payload 已是 wire 字节（含帧头 + 可选熵前缀），故返回值用消耗的真实
 // 用户字节数 len(p) 而非 wire 字节数，满足 io.Writer / net.Conn 语义。
 func (c *javaBridgeConn) writeMimic(p []byte) (int, error) {
 	chunks := c.mimic.Pack(p)
 	for _, ch := range chunks {
-		pm := &java.PluginMessage{Channel: ch.Channel, Data: ch.Payload}
-		if err := c.fr.WritePacket(java.Packet{ID: c.sbID, Payload: java.EncodePluginMessage(pm)}); err != nil {
+		if err := c.writeFramePaced(ch.Channel, ch.Payload); err != nil {
 			return 0, err
 		}
 	}
