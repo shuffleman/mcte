@@ -3,7 +3,7 @@ module github.com/shuffleman/mcte/pkg/integration/xray
 go 1.22
 
 require (
-	github.com/shuffleman/mcte v0.0.0
+	github.com/shuffleman/mcte v0.0.5
 	go.uber.org/zap v1.27.0
 )
 
@@ -23,5 +23,3 @@ require (
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/shuffleman/mcte => ../../..
